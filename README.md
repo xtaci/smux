@@ -3,10 +3,11 @@ simple multiplexing
 
 # goals
 1. receive window is shared among the streams.
-2. precise flow control.
+2. precise flow control(pluggable stragety).
 3. precise memory control.
 4. maximized payload.
 5. optimized for high-speed streams.
+6. aim for game services.
 
 ```
 FRAMETYPE=Data, OPTIONS=(flagSYN, flagACK, flagFIN, flagRST)
