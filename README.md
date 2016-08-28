@@ -1,4 +1,4 @@
-# smux
+ smux
 simple multiplexing
 
 # goals
@@ -38,8 +38,14 @@ FRAMETYPE=GoAway
 |               |               |
 +---------------+---------------+
 
-Stream.Write([]byte) --> Framer --> Qdisc.Enqueue() --> (goroutine: Session.xmit() { Qdisc.Dequeue() } --> conn.Write([]byte)
-Stream.Read([]byte) --> Stream.RxQueue <-- (goroutine: Session.recvLoop(conn))
+Stream.Write([]byte) 
+  --> Framer.split([]byte) 
+    --> Qdisc.Enqueue(Frame) 
+      --> (goroutine: Session.xmit() { Qdisc.Dequeue() } 
+        --> conn.Write(Framer.serialize())
+
+Stream.Read([]byte) 
+  --> Stream.RxQueue <-- Framer.deserialize <-- (goroutine: Session.recvLoop(conn))
 ```
 
 # status

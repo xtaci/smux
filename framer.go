@@ -15,6 +15,10 @@ type Frame struct {
 type Framer struct {
 }
 
+// split bytestream into frames
+func (fr *Framer) split(bts []byte) []*Frame {
+}
+
 // serialize a frame to transmit
 func (fr *Framer) serialize(f *Frame) []byte {
 	return nil
