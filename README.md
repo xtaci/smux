@@ -37,6 +37,9 @@ FRAMETYPE=GoAway
 | FRAMETYPE(1B) | ERROR(2B)     |
 |               |               |
 +---------------+---------------+
+
+Stream.Write([]byte) --> Framer(分帧器）--> Qdisc(排队规则) --> (goroutine: Session.xmit() { Qdisc.Dequeue() } --> conn.Write([]byte)
+Stream.Read([]byte) --> Stream.RxQueue <-- (goroutine: Session.recvLoop(conn))
 ```
 
 # status
