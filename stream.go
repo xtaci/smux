@@ -7,13 +7,27 @@ const (
 	STREAM_CLOSED
 )
 
+// Stream implements io.ReadWriteCloser
 type Stream struct {
-	state  int
-	config *Config
+	state   int
+	rxQueue []*Frame // receive queue
+	config  *Config
 }
 
 func newStream(config *Config) *Stream {
 	stream := new(Stream)
 	stream.config = config
 	return stream
+}
+
+func (s *Stream) Read(b []byte) (n int, err error) {
+	return 0, nil
+}
+
+func (s *Stream) Write(b []byte) (n int, err error) {
+	return 0, nil
+}
+
+func (s *Stream) Close() error {
+	return nil
 }
