@@ -11,28 +11,32 @@ type Frame struct {
 	Timestamp time.Time
 }
 
+// Serialize a frame to transmit
+func Serialize(f *Frame) []byte {
+	return nil
+}
+
+// Deserialize a byte slice into a frame
+func Deserialize(bts []byte) *Frame {
+	return nil
+}
+
+type Framer interface {
+	// Split bytestream into frames
+	Split(bts []byte) []Frame
+}
+
 // Framer is a frame splitter for byte stream
-type Framer struct {
+type DefaultFramer struct {
 	streamId uint32
 }
 
-func newFramer(streamId uint32) *Framer {
-	fr := new(Framer)
+func newFramer(streamId uint32) *DefaultFramer {
+	fr := new(DefaultFramer)
 	fr.streamId = streamId
 	return fr
 }
 
-// split bytestream into frames
-func (fr *Framer) split(bts []byte) []*Frame {
-	return nil
-}
-
-// serialize a frame to transmit
-func (fr *Framer) serialize(f *Frame) []byte {
-	return nil
-}
-
-// deserialize a byte slice into a frame
-func (fr *Framer) deserialize(bts []byte) *Frame {
+func (fr *DefaultFramer) Split(bts []byte) []Frame {
 	return nil
 }

@@ -11,12 +11,14 @@ const (
 type Stream struct {
 	state   int
 	rxQueue []*Frame // receive queue
-	config  *Config
+	fr      DefaultFramer
+	qdisc   Qdisc
 }
 
-func newStream(config *Config) *Stream {
+func newStream(fr DefaultFramer, qdisc Qdisc) *Stream {
 	stream := new(Stream)
-	stream.config = config
+	stream.fr = fr
+	stream.qdisc = qdisc
 	return stream
 }
 
