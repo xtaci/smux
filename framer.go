@@ -2,6 +2,7 @@ package smux
 
 import "time"
 
+// Frame defines a packet from or to be multiplexed into a single connection
 type Frame struct {
 	SessionId uint32
 	Option    uint16
@@ -10,12 +11,16 @@ type Frame struct {
 	Timestamp time.Time
 }
 
+// Framer is a frame splitter for byte stream
+type Framer struct {
+}
+
 // serialize a frame to transmit
-func (f *Framer) serialize() []byte {
+func (fr *Framer) serialize(f *Frame) []byte {
 	return nil
 }
 
-// deserialize a byte slice into current Frame
-func (f *Framer) deserialize([]byte) {
+// deserialize a byte slice into a frame
+func (fr *Framer) deserialize(bts []byte) *Frame {
 	return nil
 }
