@@ -2,10 +2,10 @@ package smux
 
 // TC defines the interface for traffic control
 type TC interface {
-	// Next returns the next frame to be sent
-	Next() *Frame
-	// Input puts a frame into the queue
-	Input(f *Frame)
+	// Enqueue puts a frame into the queue
+	Enqueue(f *Frame)
+	// Dequeue returns the next frame to be sent
+	Dequeue() *Frame
 	// IsEmpty checks whether the queue is empty
 	IsEmpty() bool
 	// Count returns the size of the queue
@@ -16,11 +16,11 @@ type FIFO struct {
 	q []*Frame
 }
 
-func (fifo *FIFO) Input(f *Frame) {
+func (fifo *FIFO) Enqueue(f *Frame) {
 	fifo.q = append(fifo.q, f)
 }
 
-func (fifo *FIFO) Next() (f *Frame) {
+func (fifo *FIFO) Dequeue() (f *Frame) {
 	f = fifo.q[0]
 	fifo.q = fifo.q[1:]
 	return
