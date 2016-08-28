@@ -16,3 +16,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.streams = make(map[uint32]*Stream)
 	return s
 }
+
+func (s *Session) OpenStream(*Stream, error) {
+}

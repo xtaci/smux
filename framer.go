@@ -22,7 +22,7 @@ func Deserialize(bts []byte) *Frame {
 }
 
 type Framer interface {
-	// Split bytestream into frames
+	// Split byte stream into frames
 	Split(bts []byte) []Frame
 }
 
