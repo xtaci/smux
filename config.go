@@ -1,5 +1,6 @@
 package smux
 
 type Config struct {
-	tc TC
+	Qdisc        Qdisc
+	MaxFrameSize uint16
 }

@@ -1,7 +1,7 @@
 package smux
 
-// TC defines the interface for traffic control
-type TC interface {
+// Qdisc defines the interface for queue discipline
+type Qdisc interface {
 	// Enqueue puts a frame into the queue
 	Enqueue(f *Frame)
 	// Dequeue returns the next frame to be sent
