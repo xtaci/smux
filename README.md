@@ -38,7 +38,7 @@ FRAMETYPE=GoAway
 |               |               |
 +---------------+---------------+
 
-Stream.Write([]byte) --> Framer(分帧器）--> Qdisc(排队规则) --> (goroutine: Session.xmit() { Qdisc.Dequeue() } --> conn.Write([]byte)
+Stream.Write([]byte) --> Framer --> Qdisc.Enqueue() --> (goroutine: Session.xmit() { Qdisc.Dequeue() } --> conn.Write([]byte)
 Stream.Read([]byte) --> Stream.RxQueue <-- (goroutine: Session.recvLoop(conn))
 ```
 
