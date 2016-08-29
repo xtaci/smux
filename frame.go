@@ -2,6 +2,7 @@ package smux
 
 import (
 	"encoding/binary"
+	"fmt"
 	"time"
 
 	"github.com/pkg/errors"
@@ -74,4 +75,35 @@ func Deserialize(bts []byte) (*Frame, error) {
 		copy(f.payload, bts[headerSize:])
 	}
 	return f, nil
+}
+
+type header []byte
+
+func (h header) Version() byte {
+	return h[0]
+}
+
+func (h header) FrameType() byte {
+	return h[1]
+}
+
+func (h header) Options() uint16 {
+	return binary.BigEndian.Uint16(h[2:4])
+}
+
+func (h header) StreamID() uint32 {
+	return binary.BigEndian.Uint32(h[4:8])
+}
+
+func (h header) UNA() uint32 {
+	return binary.BigEndian.Uint32(h[8:12])
+}
+
+func (h header) Length() uint32 {
+	return binary.BigEndian.Uint32(h[12:14])
+}
+
+func (h header) String() string {
+	return fmt.Sprintf("Version:%d FrameType:%d Options:%d StreamID:%d UNA:%d Length:%d",
+		h.Version(), h.FrameType(), h.Options(), h.StreamID(), h.UNA(), h.Length())
 }

@@ -99,6 +99,12 @@ func (s *Session) monitor() {
 
 // recvLoop continuous read packets from conn
 func (s *Session) recvLoop(ch chan []byte) {
+	h := make([]byte, headerSize)
 	for {
+		io.ReadFull(s.conn, h)
+		switch header(h).FrameType() {
+		case frameData:
+		case frameControl:
+		}
 	}
 }
