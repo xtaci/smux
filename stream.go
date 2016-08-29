@@ -68,8 +68,9 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	defer s.mu.Unlock()
 	switch s.state {
 	case streamIdle:
-		frames[0].cmd = cmdSYN
 		s.state = streamSynSent
+		f := Frame{cmd: cmdSYN, sid: s.id}
+		s.qdisc.Enqueue(f)
 	}
 
 	// TODO: block write
@@ -137,8 +138,8 @@ func (s *Stream) monitor() {
 				if f.cmd == cmdRST {
 					s.state = streamClosed
 					log.Println("connection reset")
-				} else {
-					if n, err := s.buffer.Write(f.payload); err != nil {
+				} else if f.cmd == cmdPSH { // data push
+					if n, err := s.buffer.Write(f.data); err != nil {
 						log.Println(n, err)
 					}
 					s.notifyReadable()
@@ -146,10 +147,6 @@ func (s *Stream) monitor() {
 			case streamSynSent:
 				if f.cmd == cmdACK {
 					s.state = streamEstablished
-					if n, err := s.buffer.Write(f.payload); err != nil {
-						log.Println(n, err)
-					}
-					s.notifyReadable()
 				} else {
 					s.state = streamClosed
 					log.Println("incorrect packet", f.cmd)

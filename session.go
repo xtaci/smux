@@ -114,6 +114,6 @@ func (s *Session) demux(bts []byte) {
 	frame := Deserialize(bts)
 	switch frame.cmd {
 	case cmdSYN, cmdACK, cmdRST:
-		s.streams[frame.streamId].chRx <- *frame
+		s.streams[frame.sid].chRx <- *frame
 	}
 }

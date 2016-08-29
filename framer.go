@@ -19,15 +19,15 @@ func newFramer(maxFrameSize int) *DefaultFramer {
 func (fr *DefaultFramer) Split(bts []byte) (frames []Frame) {
 	for len(bts) > fr.maxFrameSize {
 		frame := Frame{}
-		frame.payload = make([]byte, fr.maxFrameSize)
-		n := copy(frame.payload, bts)
+		frame.data = make([]byte, fr.maxFrameSize)
+		n := copy(frame.data, bts)
 		bts = bts[n:]
 		frames = append(frames, frame)
 	}
 	if len(bts) > 0 {
 		frame := Frame{}
-		frame.payload = make([]byte, len(bts))
-		copy(frame.payload, bts)
+		frame.data = make([]byte, len(bts))
+		copy(frame.data, bts)
 		frames = append(frames, frame)
 	}
 	return nil
