@@ -3,6 +3,8 @@ package smux
 import (
 	"encoding/binary"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -32,9 +34,10 @@ const (
 
 // Frame defines a packet from or to be multiplexed into a single connection
 type Frame struct {
+	version   byte
+	frameType byte
 	streamId  uint32
 	una       uint32
-	frameType uint8
 	options   uint16
 	payload   []byte
 	ts        time.Time
@@ -55,6 +58,20 @@ func Serialize(f *Frame) []byte {
 }
 
 // Deserialize a byte slice into a frame
-func Deserialize(bts []byte) *Frame {
-	return nil
+func Deserialize(bts []byte) (*Frame, error) {
+	f := new(Frame)
+	f.version = bts[0]
+	f.frameType = bts[1]
+	f.options = binary.LittleEndian.Uint16(bts[2:])
+	f.streamId = binary.LittleEndian.Uint32(bts[4:])
+	f.una = binary.LittleEndian.Uint32(bts[8:])
+	datalength := binary.LittleEndian.Uint32(bts[12:])
+	if datalength != uint32(len(bts[headerSize:])) {
+		return nil, errors.New("frame format error")
+	}
+	if datalength > 0 {
+		f.payload = make([]byte, datalength)
+		copy(f.payload, bts[headerSize:])
+	}
+	return f, nil
 }
