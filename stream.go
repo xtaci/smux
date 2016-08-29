@@ -14,14 +14,16 @@ const (
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
+	id      uint32
 	state   int
 	rxQueue []Frame // receive queue
-	fr      DefaultFramer
+	fr      Framer
 	qdisc   Qdisc
 }
 
-func newStream(fr DefaultFramer, qdisc Qdisc) *Stream {
+func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
 	stream := new(Stream)
+	stream.id = id
 	stream.fr = fr
 	stream.qdisc = qdisc
 	stream.state = STREAM_IDLE

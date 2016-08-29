@@ -3,6 +3,7 @@ package smux
 import (
 	"io"
 	"net"
+	"sync"
 
 	"github.com/pkg/errors"
 )
@@ -18,18 +19,33 @@ type Session struct {
 	streams      map[uint32]*Stream
 	die          chan struct{}
 	chAccept     chan *Stream
+	qdisc        Qdisc
+	mu           sync.Mutex
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
 	s.config = config
 	s.conn = conn
+	s.qdisc = newFIFOQdisc(1024)
 	s.streams = make(map[uint32]*Stream)
+
+	if client {
+		s.nextStreamID = 1
+	} else {
+		s.nextStreamID = 2
+	}
+	go s.monitor()
 	return s
 }
 
 // OpenStream opens a stream on the connection
 func (s *Session) OpenStream(*Stream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stream := newStream(s.nextStreamID, new(DefaultFramer), s.qdisc)
+	s.nextStreamID += 2
+	s.streams[stream.id] = stream
 }
 
 // Accept is used to block until the next available stream
