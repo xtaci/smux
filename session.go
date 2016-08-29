@@ -1,9 +1,10 @@
 package smux
 
 import (
-	"errors"
 	"io"
 	"net"
+
+	"github.com/pkg/errors"
 )
 
 const (

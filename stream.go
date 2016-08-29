@@ -43,10 +43,14 @@ func (s *Stream) Close() error {
 	return nil
 }
 
+// LocalAddr is used to get the local address of the
+// underlying connection.
 func (s *Stream) LocalAddr() net.Addr {
 	return nil
 }
 
+// RemoteAddr is used to get the address of remote end
+// of the underlying connection
 func (s *Stream) RemoteAddr() net.Addr {
 	return nil
 }
@@ -60,6 +64,8 @@ func (s *Stream) SetReadDeadline(t time.Time) error {
 func (s *Stream) SetWriteDeadline(t time.Time) error {
 	return nil
 }
+
+// SetDeadline sets the read and write deadlines
 func (s *Stream) SetDeadline(t time.Time) error {
 	return nil
 }
