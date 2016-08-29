@@ -1,5 +1,10 @@
 package smux
 
+import (
+	"net"
+	"time"
+)
+
 const (
 	STREAM_IDLE = 1 << iota
 	STREAM_NEW
@@ -35,5 +40,26 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 // Close implements io.ReadWriteCloser
 func (s *Stream) Close() error {
+	return nil
+}
+
+func (s *Stream) LocalAddr() net.Addr {
+	return nil
+}
+
+func (s *Stream) RemoteAddr() net.Addr {
+	return nil
+}
+
+// SetReadDeadline sets the deadline for future Read calls.
+func (s *Stream) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+// SetWriteDeadline sets the deadline for future Write calls
+func (s *Stream) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+func (s *Stream) SetDeadline(t time.Time) error {
 	return nil
 }
