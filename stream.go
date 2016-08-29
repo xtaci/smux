@@ -1,7 +1,9 @@
 package smux
 
 import (
+	"errors"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -20,6 +22,7 @@ type Stream struct {
 	chRx    chan Frame // frame input chan
 	fr      Framer
 	qdisc   Qdisc
+	mu      sync.Mutex
 }
 
 func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
@@ -38,6 +41,23 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
+	frames := s.fr.Split(b)
+	if len(frames) == 0 {
+		return 0, errors.New("cannot split frame")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.state {
+	case STREAM_IDLE:
+		frames[0].options |= flagSYN
+		s.state = STREAM_NEW
+	}
+
+	for k := range frames {
+		s.qdisc.Enqueue(frames[k])
+	}
+
 	return 0, nil
 }
 
@@ -70,11 +90,6 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 
 // SetDeadline sets the read and write deadlines
 func (s *Stream) SetDeadline(t time.Time) error {
-	return nil
-}
-
-// doConnect does stream establishment
-func (s *Stream) doConnect() error {
 	return nil
 }
 

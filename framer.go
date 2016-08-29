@@ -1,5 +1,7 @@
 package smux
 
+import "time"
+
 type Framer interface {
 	// Split byte stream into frames
 	Split(bts []byte) []Frame
@@ -7,15 +9,24 @@ type Framer interface {
 
 // Framer is a frame splitter for byte stream
 type DefaultFramer struct {
-	streamId uint32
+	frameId      uint32
+	maxFrameSize int
 }
 
-func newFramer(streamId uint32) *DefaultFramer {
+func newFramer(maxFrameSize int) *DefaultFramer {
 	fr := new(DefaultFramer)
-	fr.streamId = streamId
+	fr.maxFrameSize = maxFrameSize
 	return fr
 }
 
-func (fr *DefaultFramer) Split(bts []byte) []Frame {
+func (fr *DefaultFramer) Split(bts []byte) (frames []Frame) {
+	ts := time.Now()
+	for len(bts) > fr.maxFrameSize {
+		frame := Frame{}
+		frame.payload = make([]byte, fr.maxFrameSize)
+		frame.ts = ts
+		n := copy(frame.payload, bts)
+		bts = bts[n:]
+	}
 	return nil
 }
