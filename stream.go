@@ -16,7 +16,8 @@ const (
 type Stream struct {
 	id      uint32
 	state   int
-	rxQueue []Frame // receive queue
+	rxQueue []Frame    // receive queue
+	chRx    chan Frame // frame input chan
 	fr      Framer
 	qdisc   Qdisc
 }
@@ -70,4 +71,13 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // SetDeadline sets the read and write deadlines
 func (s *Stream) SetDeadline(t time.Time) error {
 	return nil
+}
+
+// doConnect does stream establishment
+func (s *Stream) doConnect() error {
+	return nil
+}
+
+func (s *Stream) rx(f Frame) {
+	s.chRx <- f
 }

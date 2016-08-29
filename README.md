@@ -1,5 +1,4 @@
- smux
-simple multiplexing
+***s***imple ***mu***ltiple***x***ing
 
 # goals
 1. receive window is shared among the streams.
@@ -8,45 +7,6 @@ simple multiplexing
 4. maximized payload.
 5. optimized for high-speed streams.
 6. aim for game services.
-
-```
-FRAMETYPE=Data, OPTIONS=(flagSYN, flagACK, flagFIN, flagRST)
-+---------------+--------------+------------+--------------+--------------------------------+
-|               |              |            |              |                                |
-| FRAMETYPE(1B) | OPTIONS(1B)  | LENGTH(2B) | STREAMID(4B) | DATA(MAX 64K)                  |
-|               |              |            |              |                                |
-+---------------+--------------+------------+--------------+--------------------------------+
-
-FRAMETYPE=WindowUpdate
-+---------------+--------------+------------+
-|               |                           |
-| FRAMETYPE(1B) |  WINDOWSIZE(4B)           |
-|               |                           |
-+---------------+--------------+------------+
-
-FRAMETYPE=Ping, OPTIONS=(flagSYN, flagACK)
-+---------------+--------------+------------+------------+
-|               |              |                         |
-| FRAMETYPE(1B) | OPTIONS(1B)  | PINGID(4B)              |
-|               |              |                         |
-+---------------+--------------+------------+------------+
-
-FRAMETYPE=GoAway 
-+---------------+---------------+
-|               |               |
-| FRAMETYPE(1B) | ERROR(2B)     |
-|               |               |
-+---------------+---------------+
-
-Stream.Write([]byte) 
-  --> Framer.split([]byte) 
-    --> Qdisc.Enqueue(Frame) 
-      --> (goroutine: Session.xmit() { Qdisc.Dequeue() } 
-        --> conn.Write(Framer.serialize())
-
-Stream.Read([]byte) 
-  --> Stream.RxQueue <-- Framer.deserialize <-- (goroutine: Session.recvLoop(conn))
-```
 
 # status
 in-progress

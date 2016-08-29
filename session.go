@@ -40,12 +40,28 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 }
 
 // OpenStream opens a stream on the connection
-func (s *Session) OpenStream(*Stream, error) {
+func (s *Session) OpenStream() (*Stream, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	stream := newStream(s.nextStreamID, new(DefaultFramer), s.qdisc)
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
+	s.mu.Unlock()
+
+	// block until succeed or timeotu
+	err := stream.doConnect()
+	if err != nil {
+		return nil, errors.Wrap(err, "OpenStream")
+	}
+	return stream, nil
+}
+
+// Open is used to create a new stream as a net.Conn
+func (s *Session) Open() (net.Conn, error) {
+	conn, err := s.OpenStream()
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 // Accept is used to block until the next available stream
