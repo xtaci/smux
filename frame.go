@@ -4,8 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 const (
@@ -53,21 +51,18 @@ func Serialize(f *Frame) []byte {
 }
 
 // Deserialize a byte slice into a frame
-func Deserialize(bts []byte) (*Frame, error) {
+func Deserialize(bts []byte) *Frame {
 	f := new(Frame)
 	f.version = bts[0]
 	f.cmd = bts[1]
 	f.streamId = binary.LittleEndian.Uint32(bts[2:])
 	f.una = binary.LittleEndian.Uint32(bts[6:])
 	datalength := binary.LittleEndian.Uint32(bts[10:])
-	if datalength != uint32(len(bts[headerSize:])) {
-		return nil, errors.New("frame format error")
-	}
 	if datalength > 0 {
 		f.payload = make([]byte, datalength)
 		copy(f.payload, bts[headerSize:])
 	}
-	return f, nil
+	return f
 }
 
 type header []byte

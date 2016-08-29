@@ -79,10 +79,6 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
-// demux the slice into the corresponding stream
-func (s *Session) demux(bts []byte) {
-}
-
 // monitor the session
 func (s *Session) monitor() {
 	ch := make(chan []byte, rxQueueLimit)
@@ -102,7 +98,22 @@ func (s *Session) recvLoop(ch chan []byte) {
 	h := make([]byte, headerSize)
 	for {
 		io.ReadFull(s.conn, h)
-		switch header(h).Cmd() {
+		dec := header(h)
+		data := h
+		if dec.Length() > 0 {
+			data = make([]byte, headerSize+dec.Length())
+			copy(data, h)
+			io.ReadFull(s.conn, data[headerSize:])
 		}
+		s.demux(data)
+	}
+}
+
+// demux the slice into the corresponding stream
+func (s *Session) demux(bts []byte) {
+	frame := Deserialize(bts)
+	switch frame.cmd {
+	case cmdSYN, cmdACK, cmdRST:
+		s.streams[frame.streamId].chRx <- *frame
 	}
 }
