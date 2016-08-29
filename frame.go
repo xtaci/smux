@@ -11,49 +11,43 @@ import (
 const (
 	version = 1
 )
-const ( // frame types
-	frameData uint8 = iota
-	frameControl
-)
 
-const ( // options
-	flagSYN uint16 = 1 << iota
-	flagACK
-	flagFIN
-	flagRST
+const ( // cmds
+	cmdSYN byte = iota
+	cmdACK
+	cmdFIN
+	cmdRST
+	cmdWND
 )
 
 const (
 	sizeOfVersion    = 1
-	sizeOfFrameType  = 1
-	sizeOfOptions    = 2
+	sizeOfCmd        = 1
 	sizeOfDataLength = 4
 	sizeOfStreamId   = 4
 	sizeOfUNA        = 4
-	headerSize       = sizeOfVersion + sizeOfFrameType + sizeOfOptions + sizeOfStreamId + sizeOfUNA + sizeOfDataLength
+	headerSize       = sizeOfVersion + sizeOfCmd + sizeOfStreamId + sizeOfUNA + sizeOfDataLength
 )
 
 // Frame defines a packet from or to be multiplexed into a single connection
 type Frame struct {
-	version   byte
-	frameType byte
-	streamId  uint32
-	una       uint32
-	options   uint16
-	payload   []byte
-	ts        time.Time
+	version  byte
+	cmd      byte
+	streamId uint32
+	una      uint32
+	payload  []byte
+	ts       time.Time
 }
 
 // Serialize a frame to transmit
-// VERSION(1B) | FRAMETYPE(1B) | OPTIONS(2B)  | STREAMID(4B) | UNA(4B) | DATALENGTH(4B) | DATA  |
+// VERSION(1B) | CMD(1B) | STREAMID(4B) | UNA(4B) | DATALENGTH(4B) | DATA  |
 func Serialize(f *Frame) []byte {
 	buf := make([]byte, headerSize+len(f.payload))
 	buf[0] = version
-	buf[1] = f.frameType
-	binary.LittleEndian.PutUint16(buf[2:], uint16(f.options))
-	binary.LittleEndian.PutUint32(buf[4:], f.streamId)
-	binary.LittleEndian.PutUint32(buf[8:], f.una)
-	binary.LittleEndian.PutUint32(buf[12:], uint32(len(f.payload)))
+	buf[1] = f.cmd
+	binary.LittleEndian.PutUint32(buf[2:], f.streamId)
+	binary.LittleEndian.PutUint32(buf[6:], f.una)
+	binary.LittleEndian.PutUint32(buf[10:], uint32(len(f.payload)))
 	copy(buf[headerSize:], f.payload)
 	return buf
 }
@@ -62,11 +56,10 @@ func Serialize(f *Frame) []byte {
 func Deserialize(bts []byte) (*Frame, error) {
 	f := new(Frame)
 	f.version = bts[0]
-	f.frameType = bts[1]
-	f.options = binary.LittleEndian.Uint16(bts[2:])
-	f.streamId = binary.LittleEndian.Uint32(bts[4:])
-	f.una = binary.LittleEndian.Uint32(bts[8:])
-	datalength := binary.LittleEndian.Uint32(bts[12:])
+	f.cmd = bts[1]
+	f.streamId = binary.LittleEndian.Uint32(bts[2:])
+	f.una = binary.LittleEndian.Uint32(bts[6:])
+	datalength := binary.LittleEndian.Uint32(bts[10:])
 	if datalength != uint32(len(bts[headerSize:])) {
 		return nil, errors.New("frame format error")
 	}
@@ -83,27 +76,23 @@ func (h header) Version() byte {
 	return h[0]
 }
 
-func (h header) FrameType() byte {
+func (h header) Cmd() byte {
 	return h[1]
 }
 
-func (h header) Options() uint16 {
-	return binary.BigEndian.Uint16(h[2:4])
-}
-
 func (h header) StreamID() uint32 {
-	return binary.BigEndian.Uint32(h[4:8])
+	return binary.BigEndian.Uint32(h[2:])
 }
 
 func (h header) UNA() uint32 {
-	return binary.BigEndian.Uint32(h[8:12])
+	return binary.BigEndian.Uint32(h[6:])
 }
 
 func (h header) Length() uint32 {
-	return binary.BigEndian.Uint32(h[12:14])
+	return binary.BigEndian.Uint32(h[10:])
 }
 
 func (h header) String() string {
-	return fmt.Sprintf("Version:%d FrameType:%d Options:%d StreamID:%d UNA:%d Length:%d",
-		h.Version(), h.FrameType(), h.Options(), h.StreamID(), h.UNA(), h.Length())
+	return fmt.Sprintf("Version:%d Cmd:%d StreamID:%d UNA:%d Length:%d",
+		h.Version(), h.Cmd(), h.StreamID(), h.UNA(), h.Length())
 }

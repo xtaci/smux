@@ -102,9 +102,7 @@ func (s *Session) recvLoop(ch chan []byte) {
 	h := make([]byte, headerSize)
 	for {
 		io.ReadFull(s.conn, h)
-		switch header(h).FrameType() {
-		case frameData:
-		case frameControl:
+		switch header(h).Cmd() {
 		}
 	}
 }
