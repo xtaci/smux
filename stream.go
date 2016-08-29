@@ -8,30 +8,34 @@ import (
 )
 
 const (
-	STREAM_IDLE = 1 << iota
-	STREAM_NEW
-	STREAM_ESTABLISHED
-	STREAM_CLOSED
+	streamIdle = 1 << iota
+	streamNew
+	streamEstablished
+	streamClosed
 )
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
 	id      uint32
 	state   int
-	rxQueue []Frame    // receive queue
-	chRx    chan Frame // frame input chan
+	rxQueue []Frame // receive queue
+	chRx    chan Frame
 	fr      Framer
 	qdisc   Qdisc
 	mu      sync.Mutex
+	die     chan struct{}
 }
 
 func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
-	stream := new(Stream)
-	stream.id = id
-	stream.fr = fr
-	stream.qdisc = qdisc
-	stream.state = STREAM_IDLE
-	return stream
+	s := new(Stream)
+	s.id = id
+	s.fr = fr
+	s.qdisc = qdisc
+	s.state = streamIdle
+	s.chRx = make(chan Frame, 8192)
+	s.die = make(chan struct{})
+	go s.monitor()
+	return s
 }
 
 // Read implements io.ReadWriteCloser
@@ -49,11 +53,12 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch s.state {
-	case STREAM_IDLE:
+	case streamIdle:
 		frames[0].options |= flagSYN
-		s.state = STREAM_NEW
+		s.state = streamNew
 	}
 
+	// TODO: block write
 	for k := range frames {
 		s.qdisc.Enqueue(frames[k])
 	}
@@ -93,6 +98,11 @@ func (s *Stream) SetDeadline(t time.Time) error {
 	return nil
 }
 
-func (s *Stream) rx(f Frame) {
-	s.chRx <- f
+// stream monitor
+func (s *Stream) monitor() {
+	for {
+		select {
+		case f := <-s.chRx:
+		}
+	}
 }
