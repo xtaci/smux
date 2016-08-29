@@ -1,7 +1,9 @@
 package smux
 
 import (
+	"bytes"
 	"errors"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -9,21 +11,24 @@ import (
 
 const (
 	streamIdle = 1 << iota
-	streamNew
+	streamSynSent
 	streamEstablished
-	streamClosed
+)
+
+const (
+	streamRxQueueLimit = 8192
 )
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
-	id      uint32
-	state   int
-	rxQueue []Frame // receive queue
-	chRx    chan Frame
-	fr      Framer
-	qdisc   Qdisc
-	mu      sync.Mutex
-	die     chan struct{}
+	id     uint32
+	state  int
+	buffer bytes.Buffer
+	chRx   chan Frame
+	fr     Framer
+	qdisc  Qdisc
+	mu     sync.Mutex
+	die    chan struct{}
 }
 
 func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
@@ -32,7 +37,7 @@ func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
 	s.fr = fr
 	s.qdisc = qdisc
 	s.state = streamIdle
-	s.chRx = make(chan Frame, 8192)
+	s.chRx = make(chan Frame, streamRxQueueLimit)
 	s.die = make(chan struct{})
 	go s.monitor()
 	return s
@@ -55,7 +60,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	switch s.state {
 	case streamIdle:
 		frames[0].options |= flagSYN
-		s.state = streamNew
+		s.state = streamSynSent
 	}
 
 	// TODO: block write
@@ -68,6 +73,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 // Close implements io.ReadWriteCloser
 func (s *Stream) Close() error {
+	close(s.die)
 	return nil
 }
 
@@ -103,6 +109,25 @@ func (s *Stream) monitor() {
 	for {
 		select {
 		case f := <-s.chRx:
+			switch s.state {
+			case streamEstablished:
+				if f.options&flagRST != 0 {
+					s.Close()
+				} else {
+					if n, err := s.buffer.Write(f.payload); err != nil {
+						log.Println(n, err)
+					}
+				}
+			case streamSynSent:
+				if f.options&flagACK != 0 {
+					s.state = streamEstablished
+					if n, err := s.buffer.Write(f.payload); err != nil {
+						log.Println(n, err)
+					}
+				} else {
+					s.Close()
+				}
+			}
 		}
 	}
 }
