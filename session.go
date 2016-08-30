@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -26,7 +27,6 @@ type Session struct {
 	mu               sync.Mutex
 	remoteWindowSize uint32
 	maxWindowSize    uint32
-	curWindowSize    uint32
 }
 
 type lockedWriter struct {
@@ -38,6 +38,77 @@ func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 	return lw.conn.Write(p)
+}
+
+type bufferPool struct {
+	reader      io.Reader
+	size        uint32
+	cap         uint32
+	streamLines map[uint32][]Frame
+	events      map[uint32]chan struct{}
+	total       uint32
+	chReadable  chan struct{}
+	die         chan struct{}
+	mu          sync.Mutex
+}
+
+func newBufferPool(reader io.Reader, cap uint32) *bufferPool {
+	bp := new(bufferPool)
+	bp.cap = cap
+	bp.streamLines = make(map[uint32][]Frame)
+	bp.events = make(map[uint32]chan struct{})
+	bp.chReadable = make(chan struct{}, 1)
+	bp.die = make(chan struct{})
+	go bp.recvLoop()
+	return bp
+}
+
+func (bp *bufferPool) register(sid uint32, ch chan struct{}) {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	bp.events[sid] = ch
+}
+
+// nonblocking read from bufferPool
+func (bp *bufferPool) read(sid uint32) *Frame {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if len(bp.streamLines[sid]) > 0 {
+		f := bp.streamLines[sid][0]
+		bp.streamLines[sid] = bp.streamLines[sid][1:]
+		bp.notifyReadable()
+		return &f
+	}
+	return nil
+}
+
+func (bp *bufferPool) notifyReadable() {
+	select {
+	case bp.chReadable <- struct{}{}:
+	default:
+	}
+}
+
+func (bp *bufferPool) recvLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		bp.mu.Lock()
+		if bp.size < bp.cap { // readable
+			bp.mu.Unlock()
+		}
+		bp.mu.Unlock()
+		select {
+		case <-ticker.C:
+		case <-bp.chReadable:
+		case <-bp.die:
+			return
+		}
+	}
+}
+
+func (bp *bufferPool) close() {
+	close(bp.die)
 }
 
 func newSession(maxWindowSize uint32, conn io.ReadWriteCloser, client bool) *Session {
