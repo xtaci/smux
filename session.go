@@ -43,7 +43,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 func (s *Session) OpenStream() (*Stream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stream := newStream(s.nextStreamID, new(DefaultFramer), s.qdisc)
+	stream := newStream(s.nextStreamID, newFramer(65536), s.qdisc)
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
 	return stream, nil

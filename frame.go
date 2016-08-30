@@ -11,13 +11,12 @@ const (
 )
 
 const ( // cmds
-	cmdSYN  byte = iota // stream open
-	cmdACK              // acknowledge stream open
-	cmdFIN              // stream close
-	cmdRST              // non-existent stream
-	cmdWASK             // ask window
-	cmdWINS             // window size
-	cmdPSH              // data push
+	cmdSYN byte = iota // stream open
+	cmdACK             // acknowledge stream open
+	cmdFIN             // stream close
+	cmdRST             // non-existent stream
+	cmdWND             // window size tell
+	cmdPSH             // data push
 )
 
 const (
@@ -25,8 +24,8 @@ const (
 	sizeOfCmd    = 1
 	sizeOfLength = 4
 	sizeOfSid    = 4
-	sizeOfUNA    = 4
-	headerSize   = sizeOfVer + sizeOfCmd + sizeOfSid + sizeOfUNA + sizeOfLength
+	sizeOfWnd    = 4
+	headerSize   = sizeOfVer + sizeOfCmd + sizeOfSid + sizeOfWnd + sizeOfLength
 )
 
 // Frame defines a packet from or to be multiplexed into a single connection
@@ -39,8 +38,12 @@ type Frame struct {
 	ts   time.Time
 }
 
+func newFrame(cmd byte, sid uint32) Frame {
+	return Frame{ver: version, cmd: cmd, sid: sid, ts: time.Now()}
+}
+
 // Serialize a frame to transmit
-// VERSION(1B) | CMD(1B) | STREAMID(4B) | UNA(4B) | LENGTH(4B) | DATA  |
+// VERSION(1B) | CMD(1B) | STREAMID(4B) | WND(4B) | LENGTH(4B) | DATA  |
 func Serialize(f *Frame) []byte {
 	buf := make([]byte, headerSize+len(f.data))
 	buf[0] = version

@@ -27,7 +27,7 @@ type Stream struct {
 	state            int
 	buffer           bytes.Buffer
 	chRx             chan Frame
-	fr               Framer
+	fr               *Framer
 	qdisc            Qdisc
 	mu               sync.Mutex
 	die              chan struct{}
@@ -36,7 +36,7 @@ type Stream struct {
 	writeDeadline    time.Time
 }
 
-func newStream(id uint32, fr Framer, qdisc Qdisc) *Stream {
+func newStream(id uint32, fr *Framer, qdisc Qdisc) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.fr = fr
@@ -59,7 +59,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
-	frames := s.fr.Split(b)
+	frames := s.fr.Split(b, cmdPSH, s.id)
 	if len(frames) == 0 {
 		return 0, errors.New("cannot split frame")
 	}
