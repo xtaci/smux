@@ -2,6 +2,7 @@ package smux
 
 import (
 	"io"
+	"log"
 	"net"
 	"sync"
 
@@ -16,23 +17,33 @@ const (
 
 type Session struct {
 	conn             io.ReadWriteCloser
+	lw               *lockedWriter
+	muConn           sync.Mutex
 	nextStreamID     uint32
 	streams          map[uint32]*Stream
 	die              chan struct{}
 	chAccept         chan *Stream
-	qdisc            Qdisc
 	mu               sync.Mutex
-	framer           *Framer
 	remoteWindowSize uint32
 	maxWindowSize    uint32
 	curWindowSize    uint32
 }
 
-func newSession(maxWindowSize uint32, qdisc Qdisc, conn io.ReadWriteCloser, client bool) *Session {
+type lockedWriter struct {
+	mu   sync.Mutex
+	conn io.Writer
+}
+
+func (lw *lockedWriter) Write(p []byte) (n int, err error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.conn.Write(p)
+}
+
+func newSession(maxWindowSize uint32, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
 	s.conn = conn
-	s.framer = newFramer(defaultFrameSize)
-	s.qdisc = newFIFOQdisc()
+	s.lw = &lockedWriter{conn: conn}
 	s.maxWindowSize = maxWindowSize
 	s.remoteWindowSize = initRemoteWindowSize
 	s.streams = make(map[uint32]*Stream)
@@ -42,7 +53,6 @@ func newSession(maxWindowSize uint32, qdisc Qdisc, conn io.ReadWriteCloser, clie
 	} else {
 		s.nextStreamID = 2
 	}
-	go s.mux()
 	go s.demux()
 	return s
 }
@@ -51,7 +61,7 @@ func newSession(maxWindowSize uint32, qdisc Qdisc, conn io.ReadWriteCloser, clie
 func (s *Session) OpenStream() (*Stream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stream := newStream(s.nextStreamID, s.framer, s.qdisc)
+	stream := newStream(s.nextStreamID, defaultFrameSize, s.lw)
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
 	return stream, nil
@@ -92,28 +102,23 @@ func (s *Session) demux() {
 	h := make([]byte, headerSize)
 	for {
 		io.ReadFull(s.conn, h)
-		dec := header(h)
+		dec := RawHeader(h)
 		data := h
 		if dec.Length() > 0 {
 			data = make([]byte, headerSize+dec.Length())
 			copy(data, h)
 			io.ReadFull(s.conn, data[headerSize:])
 		}
-		frame := Deserialize(data)
+		frame := Unmarshal(data)
 		switch frame.cmd {
 		case cmdSYN:
 		case cmdACK:
+		case cmdFIN:
 		case cmdRST:
-			s.streams[frame.sid].chRx <- *frame
+		case cmdPSH:
+			s.streams[frame.sid].chRx <- frame
+		default:
+			log.Println("frame command unknown:", frame.cmd)
 		}
-		s.remoteWindowSize = frame.wnd
-	}
-}
-
-// mux
-func (s *Session) mux() {
-	for {
-		f := s.qdisc.Dequeue()
-		f.wnd = s.curWindowSize
 	}
 }

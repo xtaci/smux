@@ -27,21 +27,21 @@ type Stream struct {
 	state            int
 	buffer           bytes.Buffer
 	chRx             chan Frame
-	fr               *Framer
-	qdisc            Qdisc
+	lw               *lockedWriter
 	mu               sync.Mutex
 	die              chan struct{}
 	chNotifyReadable chan struct{}
 	readDeadline     time.Time
 	writeDeadline    time.Time
+	frameSize        uint32
 }
 
-func newStream(id uint32, fr *Framer, qdisc Qdisc) *Stream {
+func newStream(id uint32, frameSize uint32, lw *lockedWriter) *Stream {
 	s := new(Stream)
 	s.id = id
-	s.fr = fr
-	s.qdisc = qdisc
+	s.frameSize = frameSize
 	s.state = streamIdle
+	s.lw = lw
 	s.chRx = make(chan Frame, streamRxQueueLimit)
 	s.die = make(chan struct{})
 	s.chNotifyReadable = make(chan struct{}, 1)
@@ -59,7 +59,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
-	frames := s.fr.Split(b, cmdPSH, s.id)
+	frames := s.split(b, cmdPSH, s.id)
 	if len(frames) == 0 {
 		return 0, errors.New("cannot split frame")
 	}
@@ -70,12 +70,11 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	case streamIdle:
 		s.state = streamSynSent
 		f := Frame{cmd: cmdSYN, sid: s.id}
-		s.qdisc.Enqueue(f)
+		s.lw.Write(Marshal(f))
 	}
 
-	// TODO: block write
 	for k := range frames {
-		s.qdisc.Enqueue(frames[k])
+		s.lw.Write(Marshal(frames[k]))
 	}
 
 	return 0, nil
@@ -163,4 +162,21 @@ func (s *Stream) notifyReadable() {
 	case s.chNotifyReadable <- struct{}{}:
 	default:
 	}
+}
+
+func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
+	for uint32(len(bts)) > s.frameSize {
+		frame := newFrame(cmd, sid)
+		frame.data = make([]byte, s.frameSize)
+		n := copy(frame.data, bts)
+		bts = bts[n:]
+		frames = append(frames, frame)
+	}
+	if len(bts) > 0 {
+		frame := newFrame(cmd, sid)
+		frame.data = make([]byte, len(bts))
+		copy(frame.data, bts)
+		frames = append(frames, frame)
+	}
+	return nil
 }
