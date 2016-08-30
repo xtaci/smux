@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/pkg/errors"
 )
@@ -42,22 +41,19 @@ func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 
 type bufferPool struct {
 	reader      io.Reader
-	size        uint32
-	cap         uint32
+	tokens      chan struct{}
 	streamLines map[uint32][]Frame
 	events      map[uint32]chan struct{}
 	total       uint32
-	chReadable  chan struct{}
 	die         chan struct{}
 	mu          sync.Mutex
 }
 
-func newBufferPool(reader io.Reader, cap uint32) *bufferPool {
+func newBufferPool(reader io.Reader, tokens uint32) *bufferPool {
 	bp := new(bufferPool)
-	bp.cap = cap
+	bp.tokens = make(chan struct{}, tokens)
 	bp.streamLines = make(map[uint32][]Frame)
 	bp.events = make(map[uint32]chan struct{})
-	bp.chReadable = make(chan struct{}, 1)
 	bp.die = make(chan struct{})
 	go bp.recvLoop()
 	return bp
@@ -76,31 +72,47 @@ func (bp *bufferPool) read(sid uint32) *Frame {
 	if len(bp.streamLines[sid]) > 0 {
 		f := bp.streamLines[sid][0]
 		bp.streamLines[sid] = bp.streamLines[sid][1:]
-		bp.notifyReadable()
 		return &f
 	}
 	return nil
 }
 
-func (bp *bufferPool) notifyReadable() {
-	select {
-	case bp.chReadable <- struct{}{}:
-	default:
+// read a frame from underlying connection
+func (bp *bufferPool) readFrame() (f Frame, err error) {
+	h := make([]byte, headerSize)
+	if _, err := io.ReadFull(bp.reader, h); err != nil {
+		return f, errors.Wrap(err, "readFrame")
 	}
+
+	dec := RawHeader(h)
+	data := h
+	if dec.Length() > 0 {
+		data = make([]byte, headerSize+dec.Length())
+		copy(data, h)
+		if _, err := io.ReadFull(bp.reader, data[headerSize:]); err != nil {
+			return f, errors.Wrap(err, "readFrame")
+		}
+	}
+	return Unmarshal(data), nil
 }
 
 func (bp *bufferPool) recvLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
 	for {
-		bp.mu.Lock()
-		if bp.size < bp.cap { // readable
-			bp.mu.Unlock()
-		}
-		bp.mu.Unlock()
 		select {
-		case <-ticker.C:
-		case <-bp.chReadable:
+		case <-bp.tokens:
+			if f, err := bp.readFrame(); err == nil {
+				switch f.cmd {
+				case cmdSYN:
+				case cmdACK:
+				case cmdFIN:
+				case cmdRST:
+				case cmdPSH:
+				default:
+					log.Println("frame command unknown:", f.cmd)
+				}
+			} else {
+				bp.close()
+			}
 		case <-bp.die:
 			return
 		}
@@ -108,7 +120,11 @@ func (bp *bufferPool) recvLoop() {
 }
 
 func (bp *bufferPool) close() {
-	close(bp.die)
+	select {
+	case <-bp.die:
+	default:
+		close(bp.die)
+	}
 }
 
 func newSession(maxWindowSize uint32, conn io.ReadWriteCloser, client bool) *Session {
@@ -124,7 +140,6 @@ func newSession(maxWindowSize uint32, conn io.ReadWriteCloser, client bool) *Ses
 	} else {
 		s.nextStreamID = 2
 	}
-	go s.demux()
 	return s
 }
 
@@ -165,31 +180,5 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return stream, nil
 	case <-s.die:
 		return nil, errors.New("session shutdown")
-	}
-}
-
-// demux
-func (s *Session) demux() {
-	h := make([]byte, headerSize)
-	for {
-		io.ReadFull(s.conn, h)
-		dec := RawHeader(h)
-		data := h
-		if dec.Length() > 0 {
-			data = make([]byte, headerSize+dec.Length())
-			copy(data, h)
-			io.ReadFull(s.conn, data[headerSize:])
-		}
-		frame := Unmarshal(data)
-		switch frame.cmd {
-		case cmdSYN:
-		case cmdACK:
-		case cmdFIN:
-		case cmdRST:
-		case cmdPSH:
-			s.streams[frame.sid].chRx <- frame
-		default:
-			log.Println("frame command unknown:", frame.cmd)
-		}
 	}
 }
