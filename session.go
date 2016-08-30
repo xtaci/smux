@@ -70,8 +70,6 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 
 // OpenStream opens a stream on the connection
 func (s *Session) OpenStream() (*Stream, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	chNotifyReader := make(chan struct{}, 1)
 	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
 	s.rdEvents[s.nextStreamID] = chNotifyReader
@@ -112,8 +110,6 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // nonblocking frame read for a session
 func (s *Session) read(sid uint32) *Frame {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.streamLines[sid]) > 0 {
 		f := s.streamLines[sid][0]
 		s.streamLines[sid] = s.streamLines[sid][1:]

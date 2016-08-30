@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -28,7 +29,7 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
-	f := Frame{cmd: cmdSYN, sid: s.id}
+	f := newFrame(cmdSYN, s.id)
 	bts, _ := f.MarshalBinary()
 	sess.lw.Write(bts)
 	return s
@@ -42,17 +43,21 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		return n, nil
 	}
 
-	if f := s.sess.read(s.id); f != nil {
-		switch f.cmd {
-		case cmdPSH:
-			n = copy(b, f.data)
-			if len(f.data) > n {
-				s.buffer = make([]byte, len(f.data)-n)
-				copy(s.buffer, f.data[n:])
+	for {
+		f := s.sess.read(s.id)
+		if f != nil {
+			log.Println(f)
+			switch f.cmd {
+			case cmdPSH:
+				n = copy(b, f.data)
+				if len(f.data) > n {
+					s.buffer = make([]byte, len(f.data)-n)
+					copy(s.buffer, f.data[n:])
+				}
+				log.Println("push", f)
+				return n, nil
 			}
-			return n, nil
 		}
-		println("cmd:", f.cmd)
 	}
 
 	return 0, nil
@@ -61,6 +66,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
 	frames := s.split(b, cmdPSH, s.id)
+	log.Println("frames:", len(frames))
 	if len(frames) == 0 {
 		return 0, errors.New("cannot split frame")
 	}
@@ -119,6 +125,7 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 }
 
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
+	log.Println("need split:", bts)
 	for uint32(len(bts)) > s.frameSize {
 		frame := newFrame(cmd, sid)
 		frame.data = make([]byte, s.frameSize)
@@ -132,5 +139,5 @@ func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
 		copy(frame.data, bts)
 		frames = append(frames, frame)
 	}
-	return nil
+	return
 }

@@ -29,16 +29,17 @@ func handleConnection(conn net.Conn) {
 	count := 0
 	for {
 		stream, _ := session.Accept()
-		go func() {
+		go func(stream net.Conn) {
 			for {
 				n, err := stream.Read(buf)
 				if err != nil {
 					panic(err)
 				}
+				fmt.Println("server recv:", string(buf[:n]), n)
 				count++
 				stream.Write(buf[:n])
 			}
-		}()
+		}(stream)
 	}
 
 }
