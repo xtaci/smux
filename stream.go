@@ -18,6 +18,7 @@ type Stream struct {
 	frameSize      uint32
 	die            chan struct{}
 	mu             sync.Mutex
+	buffer         []byte
 }
 
 func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *Session) *Stream {
@@ -35,11 +36,25 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
+	if len(s.buffer) > 0 {
+		n = copy(b, s.buffer)
+		s.buffer = s.buffer[n:]
+		return n, nil
+	}
+
 	if f := s.sess.read(s.id); f != nil {
 		switch f.cmd {
-		case cmdSYN:
+		case cmdPSH:
+			n = copy(b, f.data)
+			if len(f.data) > n {
+				s.buffer = make([]byte, len(f.data)-n)
+				copy(s.buffer, f.data[n:])
+			}
+			return n, nil
 		}
+		println("cmd:", f.cmd)
 	}
+
 	return 0, nil
 }
 

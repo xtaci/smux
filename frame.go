@@ -75,15 +75,11 @@ func (h RawHeader) StreamID() uint32 {
 	return binary.BigEndian.Uint32(h[2:])
 }
 
-func (h RawHeader) Wnd() uint32 {
+func (h RawHeader) Length() uint32 {
 	return binary.BigEndian.Uint32(h[6:])
 }
 
-func (h RawHeader) Length() uint32 {
-	return binary.BigEndian.Uint32(h[10:])
-}
-
 func (h RawHeader) String() string {
-	return fmt.Sprintf("Version:%d Cmd:%d StreamID:%d Wnd:%d Length:%d",
-		h.Version(), h.Cmd(), h.StreamID(), h.Wnd(), h.Length())
+	return fmt.Sprintf("Version:%d Cmd:%d StreamID:%d Length:%d",
+		h.Version(), h.Cmd(), h.StreamID(), h.Length())
 }

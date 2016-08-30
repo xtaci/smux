@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	defaultFrameSize = 4096
+	defaultFrameSize     = 4096
+	defaultAcceptBacklog = 1024
 )
 
 type Session struct {
@@ -28,9 +29,9 @@ type Session struct {
 	rdEvents    map[uint32]chan struct{}
 
 	// session control
-	die      chan struct{}
-	chAccept chan *Stream
-	mu       sync.Mutex
+	die       chan struct{}
+	chAccepts chan *Stream
+	mu        sync.Mutex
 }
 
 type lockedWriter struct {
@@ -52,6 +53,7 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 	s.tokens = make(chan struct{}, maxframes)
 	s.streamLines = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
+	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.die = make(chan struct{})
 	for i := uint32(0); i < maxframes; i++ {
 		s.tokens <- struct{}{}
@@ -101,7 +103,7 @@ func (s *Session) Accept() (net.Conn, error) {
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
 	select {
-	case stream := <-s.chAccept:
+	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-s.die:
 		return nil, errors.New("session shutdown")
@@ -155,6 +157,7 @@ func (s *Session) recvLoop() {
 					chNotifyReader := make(chan struct{}, 1)
 					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
+					s.chAccepts <- s.streams[f.sid]
 				}
 			}
 		case <-s.die:
