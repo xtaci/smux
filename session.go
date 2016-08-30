@@ -26,6 +26,12 @@ type Session struct {
 	mu               sync.Mutex
 	remoteWindowSize uint32
 	maxWindowSize    uint32
+
+	// pool control
+	tokens      chan struct{}
+	streamLines map[uint32][]Frame
+	events      map[uint32]chan struct{}
+	total       uint32
 }
 
 type lockedWriter struct {
@@ -39,101 +45,20 @@ func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 	return lw.conn.Write(p)
 }
 
-type bufferPool struct {
-	reader      io.Reader
-	tokens      chan struct{}
-	streamLines map[uint32][]Frame
-	events      map[uint32]chan struct{}
-	total       uint32
-	die         chan struct{}
-	mu          sync.Mutex
-}
-
-func newBufferPool(reader io.Reader, tokens uint32) *bufferPool {
-	bp := new(bufferPool)
-	bp.tokens = make(chan struct{}, tokens)
-	bp.streamLines = make(map[uint32][]Frame)
-	bp.events = make(map[uint32]chan struct{})
-	bp.die = make(chan struct{})
-	go bp.recvLoop()
-	return bp
-}
-
-func (bp *bufferPool) register(sid uint32, ch chan struct{}) {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	bp.events[sid] = ch
-}
-
-// nonblocking read from bufferPool
-func (bp *bufferPool) read(sid uint32) *Frame {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	if len(bp.streamLines[sid]) > 0 {
-		f := bp.streamLines[sid][0]
-		bp.streamLines[sid] = bp.streamLines[sid][1:]
-		return &f
-	}
-	return nil
-}
-
-// read a frame from underlying connection
-func (bp *bufferPool) readFrame() (f Frame, err error) {
-	h := make([]byte, headerSize)
-	if _, err := io.ReadFull(bp.reader, h); err != nil {
-		return f, errors.Wrap(err, "readFrame")
-	}
-
-	dec := RawHeader(h)
-	data := h
-	if dec.Length() > 0 {
-		data = make([]byte, headerSize+dec.Length())
-		copy(data, h)
-		if _, err := io.ReadFull(bp.reader, data[headerSize:]); err != nil {
-			return f, errors.Wrap(err, "readFrame")
-		}
-	}
-	return Unmarshal(data), nil
-}
-
-func (bp *bufferPool) recvLoop() {
-	for {
-		select {
-		case <-bp.tokens:
-			if f, err := bp.readFrame(); err == nil {
-				switch f.cmd {
-				case cmdSYN:
-				case cmdACK:
-				case cmdFIN:
-				case cmdRST:
-				case cmdPSH:
-				default:
-					log.Println("frame command unknown:", f.cmd)
-				}
-			} else {
-				bp.close()
-			}
-		case <-bp.die:
-			return
-		}
-	}
-}
-
-func (bp *bufferPool) close() {
-	select {
-	case <-bp.die:
-	default:
-		close(bp.die)
-	}
-}
-
-func newSession(maxWindowSize uint32, conn io.ReadWriteCloser, client bool) *Session {
+func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
 	s.conn = conn
 	s.lw = &lockedWriter{conn: conn}
-	s.maxWindowSize = maxWindowSize
 	s.remoteWindowSize = initRemoteWindowSize
 	s.streams = make(map[uint32]*Stream)
+	s.tokens = make(chan struct{}, maxframes)
+	s.streamLines = make(map[uint32][]Frame)
+	s.events = make(map[uint32]chan struct{})
+	s.die = make(chan struct{})
+	for i := uint32(0); i < maxframes; i++ {
+		s.tokens <- struct{}{}
+	}
+	go s.recvLoop()
 
 	if client {
 		s.nextStreamID = 1
@@ -181,4 +106,65 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case <-s.die:
 		return nil, errors.New("session shutdown")
 	}
+}
+
+// nonblocking frame read for a session
+func (s *Session) read(sid uint32) *Frame {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.streamLines[sid]) > 0 {
+		f := s.streamLines[sid][0]
+		s.streamLines[sid] = s.streamLines[sid][1:]
+		return &f
+	}
+	return nil
+}
+
+// read a frame from underlying connection
+func (s *Session) readFrame() (f Frame, err error) {
+	h := make([]byte, headerSize)
+	if _, err := io.ReadFull(s.conn, h); err != nil {
+		return f, errors.Wrap(err, "readFrame")
+	}
+
+	dec := RawHeader(h)
+	data := h
+	if dec.Length() > 0 {
+		data = make([]byte, headerSize+dec.Length())
+		copy(data, h)
+		if _, err := io.ReadFull(s.conn, data[headerSize:]); err != nil {
+			return f, errors.Wrap(err, "readFrame")
+		}
+	}
+	return Unmarshal(data), nil
+}
+
+func (s *Session) recvLoop() {
+	for {
+		select {
+		case <-s.tokens:
+			if f, err := s.readFrame(); err == nil {
+				switch f.cmd {
+				case cmdSYN:
+					s.returntoken()
+				case cmdACK:
+					s.returntoken()
+				case cmdFIN:
+					s.returntoken()
+				case cmdRST:
+					s.returntoken()
+				case cmdPSH:
+				default:
+					log.Println("frame command unknown:", f.cmd)
+					s.returntoken()
+				}
+			}
+		case <-s.die:
+			return
+		}
+	}
+}
+
+func (s *Session) returntoken() {
+	s.tokens <- struct{}{}
 }
