@@ -9,25 +9,32 @@ import (
 )
 
 const (
-	rxQueueLimit = 8192
+	defaultFrameSize     = 65536
+	rxQueueLimit         = 8192
+	initRemoteWindowSize = 65535
 )
 
 type Session struct {
-	conn         io.ReadWriteCloser
-	nextStreamID uint32
-	config       *Config
-	streams      map[uint32]*Stream
-	die          chan struct{}
-	chAccept     chan *Stream
-	qdisc        Qdisc
-	mu           sync.Mutex
+	conn             io.ReadWriteCloser
+	nextStreamID     uint32
+	streams          map[uint32]*Stream
+	die              chan struct{}
+	chAccept         chan *Stream
+	qdisc            Qdisc
+	mu               sync.Mutex
+	framer           *Framer
+	remoteWindowSize uint32
+	maxWindowSize    uint32
+	curWindowSize    uint32
 }
 
-func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
+func newSession(maxWindowSize uint32, qdisc Qdisc, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
-	s.config = config
 	s.conn = conn
+	s.framer = newFramer(defaultFrameSize)
 	s.qdisc = newFIFOQdisc()
+	s.maxWindowSize = maxWindowSize
+	s.remoteWindowSize = initRemoteWindowSize
 	s.streams = make(map[uint32]*Stream)
 
 	if client {
@@ -35,7 +42,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	} else {
 		s.nextStreamID = 2
 	}
-	go s.monitor()
+	go s.mux()
+	go s.demux()
 	return s
 }
 
@@ -43,7 +51,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 func (s *Session) OpenStream() (*Stream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stream := newStream(s.nextStreamID, newFramer(65536), s.qdisc)
+	stream := newStream(s.nextStreamID, s.framer, s.qdisc)
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
 	return stream, nil
@@ -79,22 +87,8 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
-// monitor the session
-func (s *Session) monitor() {
-	ch := make(chan []byte, rxQueueLimit)
-	go s.recvLoop(ch)
-	for {
-		select {
-		case bts := <-ch:
-			s.demux(bts)
-		case <-s.die:
-			return
-		}
-	}
-}
-
-// recvLoop continuous read packets from conn
-func (s *Session) recvLoop(ch chan []byte) {
+// demux
+func (s *Session) demux() {
 	h := make([]byte, headerSize)
 	for {
 		io.ReadFull(s.conn, h)
@@ -105,15 +99,21 @@ func (s *Session) recvLoop(ch chan []byte) {
 			copy(data, h)
 			io.ReadFull(s.conn, data[headerSize:])
 		}
-		s.demux(data)
+		frame := Deserialize(data)
+		switch frame.cmd {
+		case cmdSYN:
+		case cmdACK:
+		case cmdRST:
+			s.streams[frame.sid].chRx <- *frame
+		}
+		s.remoteWindowSize = frame.wnd
 	}
 }
 
-// demux the slice into the corresponding stream
-func (s *Session) demux(bts []byte) {
-	frame := Deserialize(bts)
-	switch frame.cmd {
-	case cmdSYN, cmdACK, cmdRST:
-		s.streams[frame.sid].chRx <- *frame
+// mux
+func (s *Session) mux() {
+	for {
+		f := s.qdisc.Dequeue()
+		f.wnd = s.curWindowSize
 	}
 }

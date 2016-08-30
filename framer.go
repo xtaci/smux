@@ -2,7 +2,6 @@ package smux
 
 type Framer struct {
 	maxFrameSize int
-	// Split byte stream into frames
 }
 
 func newFramer(maxFrameSize int) *Framer {
@@ -11,6 +10,7 @@ func newFramer(maxFrameSize int) *Framer {
 	return fr
 }
 
+// Split byte stream into frames
 func (fr *Framer) Split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
 	for len(bts) > fr.maxFrameSize {
 		frame := newFrame(cmd, sid)
