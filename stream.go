@@ -1,8 +1,6 @@
 package smux
 
 import (
-	"bytes"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -10,49 +8,37 @@ import (
 	"github.com/pkg/errors"
 )
 
-const (
-	streamIdle = 1 << iota
-	streamSynSent
-	streamEstablished
-	streamClosed
-)
-
-const (
-	streamRxQueueLimit = 8192
-)
-
 // Stream implements io.ReadWriteCloser
 type Stream struct {
-	id               uint32
-	state            int
-	buffer           bytes.Buffer
-	chRx             chan Frame
-	lw               *lockedWriter
-	mu               sync.Mutex
-	die              chan struct{}
-	chNotifyReadable chan struct{}
-	readDeadline     time.Time
-	writeDeadline    time.Time
-	frameSize        uint32
+	id             uint32
+	chNotifyReader chan struct{}
+	sess           *Session
+	readDeadline   time.Time
+	writeDeadline  time.Time
+	frameSize      uint32
+	die            chan struct{}
+	mu             sync.Mutex
 }
 
-func newStream(id uint32, frameSize uint32, lw *lockedWriter) *Stream {
+func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
+	s.chNotifyReader = chNotifyReader
 	s.frameSize = frameSize
-	s.state = streamIdle
-	s.lw = lw
-	s.chRx = make(chan Frame, streamRxQueueLimit)
+	s.sess = sess
 	s.die = make(chan struct{})
-	s.chNotifyReadable = make(chan struct{}, 1)
-	go s.monitor()
+	f := Frame{cmd: cmdSYN, sid: s.id}
+	bts, _ := f.MarshalBinary()
+	sess.lw.Write(bts)
 	return s
 }
 
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
-	if s.buffer.Len() > 0 {
-		return s.buffer.Read(b)
+	if f := s.sess.read(s.id); f != nil {
+		switch f.cmd {
+		case cmdSYN:
+		}
 	}
 	return 0, nil
 }
@@ -63,18 +49,9 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	if len(frames) == 0 {
 		return 0, errors.New("cannot split frame")
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	switch s.state {
-	case streamIdle:
-		s.state = streamSynSent
-		f := Frame{cmd: cmdSYN, sid: s.id}
-		s.lw.Write(Marshal(f))
-	}
-
 	for k := range frames {
-		s.lw.Write(Marshal(frames[k]))
+		bts, _ := frames[k].MarshalBinary()
+		s.sess.lw.Write(bts)
 	}
 
 	return 0, nil
@@ -86,7 +63,6 @@ func (s *Stream) Close() error {
 	case <-s.die:
 		return errors.New("broken pipe")
 	default:
-		s.state = streamClosed
 		close(s.die)
 	}
 	return nil
@@ -125,43 +101,6 @@ func (s *Stream) SetReadDeadline(t time.Time) error {
 func (s *Stream) SetWriteDeadline(t time.Time) error {
 	s.writeDeadline = t
 	return nil
-}
-
-// stream monitor
-func (s *Stream) monitor() {
-	for {
-		select {
-		case f := <-s.chRx:
-			switch s.state {
-			case streamEstablished:
-				if f.cmd == cmdRST {
-					s.state = streamClosed
-					log.Println("connection reset")
-				} else if f.cmd == cmdPSH { // data push
-					if n, err := s.buffer.Write(f.data); err != nil {
-						log.Println(n, err)
-					}
-					s.notifyReadable()
-				}
-			case streamSynSent:
-				if f.cmd == cmdACK {
-					s.state = streamEstablished
-				} else {
-					s.state = streamClosed
-					log.Println("incorrect packet", f.cmd)
-				}
-			}
-		case <-s.die:
-			return
-		}
-	}
-}
-
-func (s *Stream) notifyReadable() {
-	select {
-	case s.chNotifyReadable <- struct{}{}:
-	default:
-	}
 }
 
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {

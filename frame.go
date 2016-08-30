@@ -11,8 +11,6 @@ const (
 
 const ( // cmds
 	cmdSYN byte = iota // stream open
-	cmdACK             // acknowledge stream open
-	cmdFIN             // stream close
 	cmdRST             // non-existent stream
 	cmdPSH             // data push
 )
@@ -39,14 +37,14 @@ func newFrame(cmd byte, sid uint32) Frame {
 
 // Marshal a frame to transmit
 // VERSION(1B) | CMD(1B) | STREAMID(4B) | LENGTH(4B) | DATA  |
-func Marshal(f Frame) []byte {
+func (f *Frame) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, headerSize+len(f.data))
 	buf[0] = version
 	buf[1] = f.cmd
 	binary.LittleEndian.PutUint32(buf[2:], f.sid)
 	binary.LittleEndian.PutUint32(buf[6:], uint32(len(f.data)))
 	copy(buf[headerSize:], f.data)
-	return buf
+	return buf, nil
 }
 
 // Unmarshal a byte slice into a frame

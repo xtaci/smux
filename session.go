@@ -2,7 +2,6 @@ package smux
 
 import (
 	"io"
-	"log"
 	"net"
 	"sync"
 
@@ -10,28 +9,28 @@ import (
 )
 
 const (
-	defaultFrameSize     = 65536
-	rxQueueLimit         = 8192
-	initRemoteWindowSize = 65535
+	defaultFrameSize = 4096
 )
 
 type Session struct {
-	conn             io.ReadWriteCloser
-	lw               *lockedWriter
-	muConn           sync.Mutex
-	nextStreamID     uint32
-	streams          map[uint32]*Stream
-	die              chan struct{}
-	chAccept         chan *Stream
-	mu               sync.Mutex
-	remoteWindowSize uint32
-	maxWindowSize    uint32
+	// connection related
+	conn   io.ReadWriteCloser
+	lw     *lockedWriter
+	muConn sync.Mutex
 
-	// pool control
+	// stream related
+	nextStreamID uint32
+	streams      map[uint32]*Stream
+
+	// rx pool control
 	tokens      chan struct{}
 	streamLines map[uint32][]Frame
-	events      map[uint32]chan struct{}
-	total       uint32
+	rdEvents    map[uint32]chan struct{}
+
+	// session control
+	die      chan struct{}
+	chAccept chan *Stream
+	mu       sync.Mutex
 }
 
 type lockedWriter struct {
@@ -49,11 +48,10 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 	s := new(Session)
 	s.conn = conn
 	s.lw = &lockedWriter{conn: conn}
-	s.remoteWindowSize = initRemoteWindowSize
 	s.streams = make(map[uint32]*Stream)
 	s.tokens = make(chan struct{}, maxframes)
 	s.streamLines = make(map[uint32][]Frame)
-	s.events = make(map[uint32]chan struct{})
+	s.rdEvents = make(map[uint32]chan struct{})
 	s.die = make(chan struct{})
 	for i := uint32(0); i < maxframes; i++ {
 		s.tokens <- struct{}{}
@@ -72,7 +70,9 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 func (s *Session) OpenStream() (*Stream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stream := newStream(s.nextStreamID, defaultFrameSize, s.lw)
+	chNotifyReader := make(chan struct{}, 1)
+	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
+	s.rdEvents[s.nextStreamID] = chNotifyReader
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
 	return stream, nil
@@ -115,6 +115,7 @@ func (s *Session) read(sid uint32) *Frame {
 	if len(s.streamLines[sid]) > 0 {
 		f := s.streamLines[sid][0]
 		s.streamLines[sid] = s.streamLines[sid][1:]
+		s.tokens <- struct{}{}
 		return &f
 	}
 	return nil
@@ -144,27 +145,20 @@ func (s *Session) recvLoop() {
 		select {
 		case <-s.tokens:
 			if f, err := s.readFrame(); err == nil {
-				switch f.cmd {
-				case cmdSYN:
-					s.returntoken()
-				case cmdACK:
-					s.returntoken()
-				case cmdFIN:
-					s.returntoken()
-				case cmdRST:
-					s.returntoken()
-				case cmdPSH:
-				default:
-					log.Println("frame command unknown:", f.cmd)
-					s.returntoken()
+				if _, ok := s.streams[f.sid]; ok {
+					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
+					select {
+					case s.rdEvents[f.sid] <- struct{}{}:
+					default:
+					}
+				} else if f.cmd == cmdSYN {
+					chNotifyReader := make(chan struct{}, 1)
+					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
+					s.rdEvents[f.sid] = chNotifyReader
 				}
 			}
 		case <-s.die:
 			return
 		}
 	}
-}
-
-func (s *Session) returntoken() {
-	s.tokens <- struct{}{}
 }
