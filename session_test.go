@@ -95,7 +95,7 @@ func TestSpeed(t *testing.T) {
 		}
 		println("total recv:", nrecv)
 		stream.Close()
-		fmt.Println("time for 16MB rtt with encryption", time.Now().Sub(start))
+		fmt.Println("time for 16MB rtt", time.Now().Sub(start))
 		wg.Done()
 	}()
 	msg := make([]byte, 4096)
