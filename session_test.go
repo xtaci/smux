@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -63,4 +65,42 @@ func TestEcho(t *testing.T) {
 			panic(err)
 		}
 	}
+}
+
+func TestSpeed(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli)
+	stream, _ := session.OpenStream()
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		buf := make([]byte, 1024*1024)
+		nrecv := 0
+		for {
+			n, err := stream.Read(buf)
+			if err != nil {
+				fmt.Println(err)
+				break
+			} else {
+				nrecv += n
+				if nrecv == 4096*4096 {
+					break
+				}
+			}
+		}
+		println("total recv:", nrecv)
+		stream.Close()
+		fmt.Println("time for 16MB rtt with encryption", time.Now().Sub(start))
+		wg.Done()
+	}()
+	msg := make([]byte, 4096)
+	for i := 0; i < 4096; i++ {
+		stream.Write(msg)
+	}
+	wg.Wait()
 }
