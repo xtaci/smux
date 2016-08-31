@@ -35,7 +35,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 READ:
 	select {
 	case <-s.die:
-		return 0, errors.New("broken pipe")
+		return 0, errors.New(errBrokenPipe)
 	default:
 	}
 
@@ -67,7 +67,7 @@ READ:
 	case <-s.chNotifyReader:
 		goto READ
 	case <-s.die:
-		return 0, errors.New("broken pipe")
+		return 0, errors.New(errBrokenPipe)
 	}
 }
 
@@ -75,7 +75,7 @@ READ:
 func (s *Stream) Write(b []byte) (n int, err error) {
 	select {
 	case <-s.die:
-		return 0, errors.New("broken pipe")
+		return 0, errors.New(errBrokenPipe)
 	default:
 	}
 
@@ -96,7 +96,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 func (s *Stream) Close() error {
 	select {
 	case <-s.die:
-		return errors.New("broken pipe")
+		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
 		s.sess.streamClose(s.id)

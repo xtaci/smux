@@ -53,6 +53,16 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+func TestNOP(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, maxFrames, frameSize)
+	session.sendNOP()
+	session.Close()
+}
+
 func TestEcho(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
@@ -125,7 +135,6 @@ func TestParallel(t *testing.T) {
 	messages := 100
 	var wg sync.WaitGroup
 	wg.Add(par)
-	fmt.Println("testing parallel", par, "connections")
 	for i := 0; i < par; i++ {
 		stream, _ := session.OpenStream()
 		go func(s *Stream) {
@@ -141,6 +150,7 @@ func TestParallel(t *testing.T) {
 			wg.Done()
 		}(stream)
 	}
+	t.Log("created", session.NumStreams(), "streams")
 	wg.Wait()
 	session.Close()
 }

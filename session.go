@@ -14,6 +14,11 @@ const (
 	defaultCloseWait     = 1024
 )
 
+const (
+	errBrokenPipe      = "broken pipe"
+	errInvalidProtocol = "invalid protocol version"
+)
+
 // Session defines a multiplexed connection for streams
 type Session struct {
 	// connection related
@@ -102,7 +107,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-s.die:
-		return nil, errors.New("session shutdown")
+		return nil, errors.New(errBrokenPipe)
 	}
 }
 
@@ -110,7 +115,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 func (s *Session) Close() error {
 	select {
 	case <-s.die:
-		return errors.New("broken pipe")
+		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
 		s.conn.Close()
@@ -160,6 +165,10 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	}
 
 	dec := rawHeader(buffer)
+	if dec.Version() != version {
+		return f, errors.New(errInvalidProtocol)
+	}
+
 	if length := dec.Length(); length > 0 {
 		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
 			return f, errors.Wrap(err, "readFrame")
@@ -242,9 +251,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			f := newFrame(cmdNOP, 0)
-			bts, _ := f.MarshalBinary()
-			s.lw.Write(bts)
+			s.sendNOP()
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
@@ -254,4 +261,10 @@ func (s *Session) keepalive() {
 			return
 		}
 	}
+}
+
+func (s *Session) sendNOP() {
+	f := newFrame(cmdNOP, 0)
+	bts, _ := f.MarshalBinary()
+	s.lw.Write(bts)
 }
