@@ -72,7 +72,7 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 	return s
 }
 
-// OpenStream opens a stream on the connection
+// OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
 	// track stream
 	s.mu.Lock()
@@ -84,7 +84,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streams[sid] = stream
 	s.mu.Unlock()
 
-	// send SYN packet
+	// cmdSYN
 	f := newFrame(cmdSYN, sid)
 	bts, _ := f.MarshalBinary()
 	s.lw.Write(bts)
@@ -122,7 +122,7 @@ func (s *Session) streamClose(sid uint32) {
 	s.chClose <- sid
 }
 
-// nonblocking frame read for a session
+// nonblocking read from session pool, for streams
 func (s *Session) nioread(sid uint32) *Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,7 +136,7 @@ func (s *Session) nioread(sid uint32) *Frame {
 	return nil
 }
 
-// read a frame from underlying connection
+// session read a frame from underlying connection
 func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
 		return f, errors.Wrap(err, "readFrame")
@@ -154,6 +154,7 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	return f, nil
 }
 
+// monitors streams
 func (s *Session) monitor() {
 	for {
 		select {

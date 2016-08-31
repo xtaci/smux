@@ -19,6 +19,7 @@ type Stream struct {
 	buffer         []byte
 }
 
+// newStream initiates a Stream struct
 func newStream(id uint32, frameSize uint16, chNotifyReader chan struct{}, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
@@ -106,6 +107,7 @@ func (s *Stream) Close() error {
 	return nil
 }
 
+// split large byte buffer into smaller frames
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 	var frames []Frame
 	for len(bts) > int(s.frameSize) {
