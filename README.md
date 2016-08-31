@@ -12,11 +12,10 @@
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
 
-## goals
-1. receive window is shared among the streams.
-1. precise memory control.
-1. maximized payload.
-1. optimized for high-speed streams.
+## Features
+1. Token controlled receive buffer.
+1. Receive buffer is shared among streams(FIFO).
+1. Minimized header, mobile friendly design.
 
 ## status
-in-progress
+Alpha
