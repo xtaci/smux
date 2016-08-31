@@ -167,6 +167,7 @@ func (s *Session) recvLoop() {
 					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
 					s.chAccepts <- s.streams[f.sid]
+					s.tokens <- struct{}{}
 				}
 				s.mu.Unlock()
 			} else {
