@@ -35,7 +35,7 @@ func newFrame(cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 
-// Marshal a frame to transmit
+// MarshalBinary a frame to transmit
 // VERSION(1B) | CMD(1B) | STREAMID(4B) | LENGTH(4B) | DATA  |
 func (f *Frame) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, headerSize+len(f.data))
@@ -47,7 +47,7 @@ func (f *Frame) MarshalBinary() ([]byte, error) {
 	return buf, nil
 }
 
-// Unmarshal a byte slice into a frame
+// UnmarshalBinary a byte slice into a frame
 func (f *Frame) UnmarshalBinary(bts []byte) error {
 	f.ver = bts[0]
 	f.cmd = bts[1]

@@ -12,6 +12,7 @@ const (
 	defaultCloseWait     = 1024
 )
 
+// Session defines a multiplexed connection for streams
 type Session struct {
 	// connection related
 	conn   io.ReadWriteCloser
@@ -102,6 +103,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
+// Close is used to close the session and all streams.
 func (s *Session) Close() error {
 	select {
 	case <-s.die:
@@ -136,23 +138,21 @@ func (s *Session) nioread(sid uint32) *Frame {
 }
 
 // read a frame from underlying connection
-func (s *Session) readFrame() (f Frame, err error) {
-	h := make([]byte, headerSize)
-	if _, err := io.ReadFull(s.conn, h); err != nil {
+func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
+	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
 		return f, errors.Wrap(err, "readFrame")
 	}
 
-	dec := rawHeader(h)
-	data := h
-	if dec.Length() > 0 {
-		data = make([]byte, headerSize+dec.Length())
-		copy(data, h)
-		if _, err := io.ReadFull(s.conn, data[headerSize:]); err != nil {
+	dec := rawHeader(buffer)
+	if length := dec.Length(); length > 0 {
+		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
+		f.UnmarshalBinary(buffer[:headerSize+length])
+		return f, nil
 	}
-	err = f.UnmarshalBinary(data)
-	return f, err
+	f.UnmarshalBinary(buffer[:headerSize])
+	return f, nil
 }
 
 func (s *Session) monitor() {
@@ -172,10 +172,11 @@ func (s *Session) monitor() {
 
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
+	buffer := make([]byte, s.frameSize+headerSize)
 	for {
 		select {
 		case <-s.tokens:
-			if f, err := s.readFrame(); err == nil {
+			if f, err := s.readFrame(buffer); err == nil {
 				s.mu.Lock()
 				if _, ok := s.streams[f.sid]; ok {
 					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
