@@ -126,6 +126,14 @@ func (s *Session) Close() error {
 	return nil
 }
 
+// NumStreams returns the number of currently open streams
+func (s *Session) NumStreams() int {
+	s.mu.Lock()
+	num := len(s.streams)
+	s.mu.Unlock()
+	return num
+}
+
 func (s *Session) streamClose(sid uint32) {
 	s.chClose <- sid
 }
@@ -133,14 +141,15 @@ func (s *Session) streamClose(sid uint32) {
 // nonblocking read from session pool, for streams
 func (s *Session) nioread(sid uint32) *Frame {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	frames := s.streamLines[sid]
 	if len(frames) > 0 {
 		f := frames[0]
 		s.streamLines[sid] = frames[1:]
 		s.tokens <- struct{}{}
+		s.mu.Unlock()
 		return &f
 	}
+	s.mu.Unlock()
 	return nil
 }
 
