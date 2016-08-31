@@ -15,12 +15,12 @@ const (
 )
 
 func init() {
+	ln, err := net.Listen("tcp", "127.0.0.1:19999")
+	if err != nil {
+		// handle error
+		panic(err)
+	}
 	go func() {
-		ln, err := net.Listen("tcp", "127.0.0.1:19999")
-		if err != nil {
-			// handle error
-			panic(err)
-		}
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
