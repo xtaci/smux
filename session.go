@@ -10,6 +10,7 @@ import (
 const (
 	defaultFrameSize     = 4096
 	defaultAcceptBacklog = 1024
+	defaultCloseWait     = 1024
 )
 
 type Session struct {
@@ -27,9 +28,10 @@ type Session struct {
 	streamLines map[uint32][]Frame
 	rdEvents    map[uint32]chan struct{}
 
-	// session control
+	// control
 	die       chan struct{}
 	chAccepts chan *Stream
+	chClose   chan uint32
 	mu        sync.Mutex
 }
 
@@ -54,6 +56,7 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 	s.streamLines = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
+	s.chClose = make(chan uint32, defaultCloseWait)
 	s.die = make(chan struct{})
 	for i := uint32(0); i < maxframes; i++ {
 		s.tokens <- struct{}{}
@@ -107,11 +110,7 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) streamClose(sid uint32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.streams, sid)
-	delete(s.rdEvents, sid)
-	delete(s.streamLines, sid)
+	s.chClose <- sid
 }
 
 // nonblocking frame read for a session
@@ -172,6 +171,12 @@ func (s *Session) recvLoop() {
 			} else {
 				return
 			}
+		case sid := <-s.chClose:
+			s.mu.Lock()
+			delete(s.streams, sid)
+			delete(s.rdEvents, sid)
+			delete(s.streamLines, sid)
+			s.mu.Unlock()
 		case <-s.die:
 			return
 		}

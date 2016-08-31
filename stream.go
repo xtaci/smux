@@ -31,6 +31,12 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
 READ:
+	select {
+	case <-s.die:
+		return 0, errors.New("broken pipe")
+	default:
+	}
+
 	s.rlock.Lock()
 	if len(s.buffer) > 0 {
 		n = copy(b, s.buffer)
@@ -66,6 +72,12 @@ READ:
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
+	select {
+	case <-s.die:
+		return 0, errors.New("broken pipe")
+	default:
+	}
+
 	frames := s.split(b, cmdPSH, s.id)
 	for k := range frames {
 		bts, _ := frames[k].MarshalBinary()
