@@ -15,7 +15,7 @@
 
 ## Features
 1. Token controlled receive buffer.
-1. Receive buffer is shared among streams.
+1. Receive buffer is own by session and is shared across streams.
 1. Minimized header, mobile friendly design.
 
 ## Status
