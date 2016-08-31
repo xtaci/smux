@@ -186,20 +186,26 @@ func (s *Session) recvLoop() {
 		case <-s.tokens:
 			if f, err := s.readFrame(buffer); err == nil {
 				s.mu.Lock()
-				if f.cmd == cmdNOP {
+				switch f.cmd {
+				case cmdNOP:
 					s.tokens <- struct{}{}
-				} else if _, ok := s.streams[f.sid]; ok {
-					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
-					select {
-					case s.rdEvents[f.sid] <- struct{}{}:
-					default:
-					}
-				} else if f.cmd == cmdSYN {
+				case cmdTerminate:
+					s.Close()
+					return
+				case cmdSYN:
 					chNotifyReader := make(chan struct{}, 1)
 					s.streams[f.sid] = newStream(f.sid, s.frameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
 					s.chAccepts <- s.streams[f.sid]
 					s.tokens <- struct{}{}
+				default:
+					if _, ok := s.streams[f.sid]; ok {
+						s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
+						select {
+						case s.rdEvents[f.sid] <- struct{}{}:
+						default:
+						}
+					}
 				}
 				s.mu.Unlock()
 				atomic.StoreInt32(&s.dataReady, 1)
