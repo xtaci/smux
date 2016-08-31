@@ -81,6 +81,9 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.sess.streamClose(s.id)
+		f := newFrame(cmdRST, s.id)
+		bts, _ := f.MarshalBinary()
+		s.sess.lw.Write(bts)
 	}
 	return nil
 }

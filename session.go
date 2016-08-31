@@ -139,7 +139,8 @@ func (s *Session) readFrame() (f Frame, err error) {
 			return f, errors.Wrap(err, "readFrame")
 		}
 	}
-	return Unmarshal(data), nil
+	err = f.UnmarshalBinary(data)
+	return f, err
 }
 
 func (s *Session) recvLoop() {
@@ -147,22 +148,20 @@ func (s *Session) recvLoop() {
 		select {
 		case <-s.tokens:
 			if f, err := s.readFrame(); err == nil {
+				s.mu.Lock()
 				if _, ok := s.streams[f.sid]; ok {
-					s.mu.Lock()
 					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
 					select {
 					case s.rdEvents[f.sid] <- struct{}{}:
 					default:
 					}
-					s.mu.Unlock()
 				} else if f.cmd == cmdSYN {
 					chNotifyReader := make(chan struct{}, 1)
-					s.mu.Lock()
 					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
-					s.mu.Unlock()
 					s.chAccepts <- s.streams[f.sid]
 				}
+				s.mu.Unlock()
 			} else {
 				log.Println(err)
 			}

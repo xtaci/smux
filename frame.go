@@ -11,7 +11,7 @@ const (
 
 const ( // cmds
 	cmdSYN byte = iota // stream open
-	cmdRST             // non-existent stream
+	cmdRST             // stream close
 	cmdPSH             // data push
 )
 
@@ -48,8 +48,7 @@ func (f *Frame) MarshalBinary() ([]byte, error) {
 }
 
 // Unmarshal a byte slice into a frame
-func Unmarshal(bts []byte) Frame {
-	f := Frame{}
+func (f *Frame) UnmarshalBinary(bts []byte) error {
 	f.ver = bts[0]
 	f.cmd = bts[1]
 	f.sid = binary.LittleEndian.Uint32(bts[2:])
@@ -58,7 +57,7 @@ func Unmarshal(bts []byte) Frame {
 		f.data = make([]byte, datalength)
 		copy(f.data, bts[headerSize:])
 	}
-	return f
+	return nil
 }
 
 type RawHeader []byte
