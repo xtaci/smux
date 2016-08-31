@@ -91,6 +91,10 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
+func (s *Session) Close() error {
+	return nil
+}
+
 // nonblocking frame read for a session
 func (s *Session) read(sid uint32) *Frame {
 	s.mu.Lock()

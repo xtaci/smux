@@ -63,15 +63,13 @@ READ:
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
 	frames := s.split(b, cmdPSH, s.id)
-	if len(frames) == 0 {
-		return 0, errors.New("cannot split frame")
-	}
 	for k := range frames {
 		bts, _ := frames[k].MarshalBinary()
-		s.sess.lw.Write(bts)
+		if _, err = s.sess.lw.Write(bts); err != nil {
+			return 0, err
+		}
 	}
-
-	return 0, nil
+	return len(b), nil
 }
 
 // Close implements io.ReadWriteCloser
