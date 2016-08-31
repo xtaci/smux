@@ -12,13 +12,13 @@ type Stream struct {
 	id             uint32
 	chNotifyReader chan struct{}
 	sess           *Session
-	frameSize      uint32
+	frameSize      int
 	die            chan struct{}
 	rlock          sync.Mutex
 	buffer         []byte
 }
 
-func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *Session) *Stream {
+func newStream(id uint32, frameSize int, chNotifyReader chan struct{}, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.chNotifyReader = chNotifyReader
@@ -44,8 +44,7 @@ READ:
 		return n, nil
 	}
 
-	f := s.sess.nioread(s.id)
-	if f != nil {
+	if f := s.sess.nioread(s.id); f != nil {
 		switch f.cmd {
 		case cmdPSH:
 			n = copy(b, f.data)
@@ -105,7 +104,7 @@ func (s *Stream) Close() error {
 
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 	var frames []Frame
-	for uint32(len(bts)) > s.frameSize {
+	for len(bts) > s.frameSize {
 		frame := newFrame(cmd, sid)
 		frame.data = make([]byte, s.frameSize)
 		n := copy(frame.data, bts)

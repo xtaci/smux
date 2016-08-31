@@ -2,10 +2,10 @@ package smux
 
 import "io"
 
-func Server(conn io.ReadWriteCloser) (*Session, error) {
-	return newSession(4096, conn, false), nil
+func Server(conn io.ReadWriteCloser, maxframes, framesize int) (*Session, error) {
+	return newSession(conn, false, maxframes, framesize), nil
 }
 
-func Client(conn io.ReadWriteCloser) (*Session, error) {
-	return newSession(4096, conn, true), nil
+func Client(conn io.ReadWriteCloser, maxframes, framesize int) (*Session, error) {
+	return newSession(conn, true, maxframes, framesize), nil
 }

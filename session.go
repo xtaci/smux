@@ -8,7 +8,6 @@ import (
 )
 
 const (
-	defaultFrameSize     = 4096
 	defaultAcceptBacklog = 1024
 	defaultCloseWait     = 1024
 )
@@ -22,6 +21,7 @@ type Session struct {
 	// stream related
 	nextStreamID uint32
 	streams      map[uint32]*Stream
+	frameSize    int
 
 	// rx pool control
 	tokens      chan struct{}
@@ -47,9 +47,10 @@ func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session {
+func newSession(conn io.ReadWriteCloser, client bool, maxframes, framesize int) *Session {
 	s := new(Session)
 	s.conn = conn
+	s.frameSize = framesize
 	s.lw = &lockedWriter{conn: conn}
 	s.streams = make(map[uint32]*Stream)
 	s.tokens = make(chan struct{}, maxframes)
@@ -58,7 +59,7 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClose = make(chan uint32, defaultCloseWait)
 	s.die = make(chan struct{})
-	for i := uint32(0); i < maxframes; i++ {
+	for i := 0; i < maxframes; i++ {
 		s.tokens <- struct{}{}
 	}
 	if client {
@@ -77,7 +78,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	sid := s.nextStreamID
 	s.nextStreamID += 2
 	chNotifyReader := make(chan struct{}, 1)
-	stream := newStream(sid, defaultFrameSize, chNotifyReader, s)
+	stream := newStream(sid, s.frameSize, chNotifyReader, s)
 	s.rdEvents[sid] = chNotifyReader
 	s.streams[sid] = stream
 	s.mu.Unlock()
@@ -162,7 +163,7 @@ func (s *Session) recvLoop() {
 					}
 				} else if f.cmd == cmdSYN {
 					chNotifyReader := make(chan struct{}, 1)
-					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
+					s.streams[f.sid] = newStream(f.sid, s.frameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
 					s.chAccepts <- s.streams[f.sid]
 					s.tokens <- struct{}{}
