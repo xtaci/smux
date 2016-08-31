@@ -113,6 +113,7 @@ func (s *Session) Close() error {
 		return errors.New("broken pipe")
 	default:
 		close(s.die)
+		s.conn.Close()
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for k := range s.streams {
