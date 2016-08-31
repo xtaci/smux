@@ -118,7 +118,6 @@ func (s *Session) Close() error {
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
-		s.conn.Close()
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for k := range s.streams {
@@ -127,6 +126,7 @@ func (s *Session) Close() error {
 		f := newFrame(cmdTerminate, 0)
 		bts, _ := f.MarshalBinary()
 		s.lw.Write(bts)
+		s.conn.Close()
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ const ( // cmds
 	cmdRST                   // stream close
 	cmdPSH                   // data push
 	cmdNOP                   // no operation
-	cmdTerminate             // terminate session
+	cmdTerminate             // explict terminate session
 )
 
 const (
