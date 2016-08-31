@@ -21,7 +21,7 @@ type Session struct {
 	// stream related
 	nextStreamID uint32
 	streams      map[uint32]*Stream
-	frameSize    int
+	frameSize    uint16
 
 	// rx pool control
 	tokens      chan struct{}
@@ -47,7 +47,7 @@ func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func newSession(conn io.ReadWriteCloser, client bool, maxframes, framesize int) *Session {
+func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize uint16) *Session {
 	s := new(Session)
 	s.conn = conn
 	s.frameSize = framesize

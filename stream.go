@@ -13,13 +13,13 @@ type Stream struct {
 	id             uint32
 	chNotifyReader chan struct{}
 	sess           *Session
-	frameSize      int
+	frameSize      uint16
 	die            chan struct{}
 	rlock          sync.Mutex
 	buffer         []byte
 }
 
-func newStream(id uint32, frameSize int, chNotifyReader chan struct{}, sess *Session) *Stream {
+func newStream(id uint32, frameSize uint16, chNotifyReader chan struct{}, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.chNotifyReader = chNotifyReader
@@ -108,7 +108,7 @@ func (s *Stream) Close() error {
 
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 	var frames []Frame
-	for len(bts) > s.frameSize {
+	for len(bts) > int(s.frameSize) {
 		frame := newFrame(cmd, sid)
 		frame.data = make([]byte, s.frameSize)
 		n := copy(frame.data, bts)
