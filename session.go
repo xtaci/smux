@@ -68,6 +68,7 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes, framesize int) 
 		s.nextStreamID = 2
 	}
 	go s.recvLoop()
+	go s.monitor()
 	return s
 }
 
@@ -102,10 +103,16 @@ func (s *Session) AcceptStream() (*Stream, error) {
 }
 
 func (s *Session) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k := range s.streams {
-		s.streams[k].Close()
+	select {
+	case <-s.die:
+		return errors.New("broken pipe")
+	default:
+		close(s.die)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for k := range s.streams {
+			s.streams[k].Close()
+		}
 	}
 	return nil
 }
@@ -148,6 +155,21 @@ func (s *Session) readFrame() (f Frame, err error) {
 	return f, err
 }
 
+func (s *Session) monitor() {
+	for {
+		select {
+		case sid := <-s.chClose:
+			s.mu.Lock()
+			delete(s.streams, sid)
+			delete(s.rdEvents, sid)
+			delete(s.streamLines, sid)
+			s.mu.Unlock()
+		case <-s.die:
+			return
+		}
+	}
+}
+
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
 	for {
@@ -172,12 +194,6 @@ func (s *Session) recvLoop() {
 			} else {
 				return
 			}
-		case sid := <-s.chClose:
-			s.mu.Lock()
-			delete(s.streams, sid)
-			delete(s.rdEvents, sid)
-			delete(s.streamLines, sid)
-			s.mu.Unlock()
 		case <-s.die:
 			return
 		}

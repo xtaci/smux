@@ -67,6 +67,7 @@ func TestEcho(t *testing.T) {
 			return
 		}
 	}
+	session.Close()
 }
 
 func TestSpeed(t *testing.T) {
@@ -105,6 +106,7 @@ func TestSpeed(t *testing.T) {
 		stream.Write(msg)
 	}
 	wg.Wait()
+	session.Close()
 }
 
 func TestParallel(t *testing.T) {
@@ -130,8 +132,10 @@ func TestParallel(t *testing.T) {
 					break
 				}
 			}
+			s.Close()
 			wg.Done()
 		}(stream)
 	}
 	wg.Wait()
+	session.Close()
 }
