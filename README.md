@@ -1,5 +1,6 @@
 # ***s***imple ***mu***ltiple***x***ing
 [![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10]
+![mux](mux.png)
 
 [1]: https://godoc.org/github.com/xtaci/smux?status.svg
 [2]: https://godoc.org/github.com/xtaci/smux
