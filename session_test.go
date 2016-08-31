@@ -3,7 +3,6 @@ package smux
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"testing"
@@ -40,8 +39,7 @@ func handleConnection(conn net.Conn) {
 					panic(err)
 				}
 				count++
-				wn, err := stream.Write(buf[:n])
-				log.Println("written:", wn, "n:", n, err)
+				stream.Write(buf[:n])
 			}
 		}(stream)
 	}

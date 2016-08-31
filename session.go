@@ -41,8 +41,9 @@ type lockedWriter struct {
 
 func (lw *lockedWriter) Write(p []byte) (n int, err error) {
 	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return lw.conn.Write(p)
+	n, err = lw.conn.Write(p)
+	lw.mu.Unlock()
+	return
 }
 
 func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session {
@@ -92,7 +93,20 @@ func (s *Session) AcceptStream() (*Stream, error) {
 }
 
 func (s *Session) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.streams {
+		s.streams[k].Close()
+	}
 	return nil
+}
+
+func (s *Session) streamClose(sid uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.streams, sid)
+	delete(s.rdEvents, sid)
+	delete(s.streamLines, sid)
 }
 
 // nonblocking frame read for a session

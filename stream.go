@@ -42,6 +42,7 @@ READ:
 	f := s.sess.read(s.id)
 	if f != nil {
 		switch f.cmd {
+		case cmdRST:
 		case cmdPSH:
 			n = copy(b, f.data)
 			if len(f.data) > n {
@@ -79,6 +80,7 @@ func (s *Stream) Close() error {
 		return errors.New("broken pipe")
 	default:
 		close(s.die)
+		s.sess.streamClose(s.id)
 	}
 	return nil
 }
