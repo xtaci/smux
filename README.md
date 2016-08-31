@@ -17,5 +17,5 @@
 1. Receive buffer is shared among streams(FIFO).
 1. Minimized header, mobile friendly design.
 
-## status
+## Status
 Alpha
