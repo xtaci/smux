@@ -30,13 +30,14 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
+READ:
+	s.mu.Lock()
 	if len(s.buffer) > 0 {
 		n = copy(b, s.buffer)
 		s.buffer = s.buffer[n:]
 		return n, nil
 	}
 
-READ:
 	f := s.sess.nioread(s.id)
 	if f != nil {
 		switch f.cmd {
@@ -46,21 +47,25 @@ READ:
 				s.buffer = make([]byte, len(f.data)-n)
 				copy(s.buffer, f.data[n:])
 			}
+			s.mu.Unlock()
 			return n, nil
 		default:
+			s.mu.Unlock()
 			return 0, io.EOF
 		}
 	}
 
+	s.mu.Unlock()
 	select {
 	case <-s.chNotifyReader:
 		goto READ
 	}
-	return n, nil
 }
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	frames := s.split(b, cmdPSH, s.id)
 	for k := range frames {
 		bts, _ := frames[k].MarshalBinary()
@@ -86,7 +91,8 @@ func (s *Stream) Close() error {
 	return nil
 }
 
-func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
+func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
+	var frames []Frame
 	for uint32(len(bts)) > s.frameSize {
 		frame := newFrame(cmd, sid)
 		frame.data = make([]byte, s.frameSize)
@@ -100,5 +106,5 @@ func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
 		copy(frame.data, bts)
 		frames = append(frames, frame)
 	}
-	return
+	return frames
 }
