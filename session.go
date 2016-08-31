@@ -15,9 +15,8 @@ const (
 // Session defines a multiplexed connection for streams
 type Session struct {
 	// connection related
-	conn   io.ReadWriteCloser
-	lw     *lockedWriter
-	muConn sync.Mutex
+	conn io.ReadWriteCloser
+	lw   *lockedWriter
 
 	// stream related
 	nextStreamID uint32
