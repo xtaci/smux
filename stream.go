@@ -59,13 +59,13 @@ READ:
 	select {
 	case <-s.chNotifyReader:
 		goto READ
+	case <-s.die:
+		return 0, errors.New("broken pipe")
 	}
 }
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	frames := s.split(b, cmdPSH, s.id)
 	for k := range frames {
 		bts, _ := frames[k].MarshalBinary()
