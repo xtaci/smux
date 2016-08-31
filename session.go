@@ -27,7 +27,7 @@ type Session struct {
 	rdEvents     map[uint32]chan struct{}
 
 	// token controlled read buffer
-	tokens      chan struct{}
+	tbf         chan struct{}
 	streamLines map[uint32][]Frame
 
 	//
@@ -56,14 +56,14 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 	s.frameSize = framesize
 	s.lw = &lockedWriter{conn: conn}
 	s.streams = make(map[uint32]*Stream)
-	s.tokens = make(chan struct{}, maxframes)
+	s.tbf = make(chan struct{}, maxframes)
 	s.streamLines = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClose = make(chan uint32, defaultCloseWait)
 	s.die = make(chan struct{})
 	for i := 0; i < maxframes; i++ {
-		s.tokens <- struct{}{}
+		s.tbf <- struct{}{}
 	}
 	if client {
 		s.nextStreamID = 1
@@ -145,7 +145,7 @@ func (s *Session) nioread(sid uint32) *Frame {
 	if len(frames) > 0 {
 		f := frames[0]
 		s.streamLines[sid] = frames[1:]
-		s.tokens <- struct{}{}
+		s.tbf <- struct{}{}
 		s.mu.Unlock()
 		return &f
 	}
@@ -183,7 +183,7 @@ func (s *Session) monitor() {
 			delete(s.streamLines, sid)
 			s.mu.Unlock()
 			for i := 0; i < ntokens; i++ { // return stream tokens to the pool
-				s.tokens <- struct{}{}
+				s.tbf <- struct{}{}
 			}
 		case <-s.die:
 			return
@@ -196,12 +196,12 @@ func (s *Session) recvLoop() {
 	buffer := make([]byte, (1<<16)+headerSize)
 	for {
 		select {
-		case <-s.tokens:
+		case <-s.tbf:
 			if f, err := s.readFrame(buffer); err == nil {
 				s.mu.Lock()
 				switch f.cmd {
 				case cmdNOP:
-					s.tokens <- struct{}{}
+					s.tbf <- struct{}{}
 				case cmdTerminate:
 					s.Close()
 					return
@@ -210,7 +210,7 @@ func (s *Session) recvLoop() {
 					s.streams[f.sid] = newStream(f.sid, s.frameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
 					s.chAccepts <- s.streams[f.sid]
-					s.tokens <- struct{}{}
+					s.tbf <- struct{}{}
 				default:
 					if _, ok := s.streams[f.sid]; ok {
 						s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
@@ -218,6 +218,8 @@ func (s *Session) recvLoop() {
 						case s.rdEvents[f.sid] <- struct{}{}:
 						default:
 						}
+					} else {
+						s.tbf <- struct{}{}
 					}
 				}
 				s.mu.Unlock()
