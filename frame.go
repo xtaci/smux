@@ -72,11 +72,11 @@ func (h RawHeader) Cmd() byte {
 }
 
 func (h RawHeader) StreamID() uint32 {
-	return binary.BigEndian.Uint32(h[2:])
+	return binary.LittleEndian.Uint32(h[2:])
 }
 
 func (h RawHeader) Length() uint32 {
-	return binary.BigEndian.Uint32(h[6:])
+	return binary.LittleEndian.Uint32(h[6:])
 }
 
 func (h RawHeader) String() string {

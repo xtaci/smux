@@ -1,7 +1,6 @@
 package smux
 
 import (
-	"log"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -39,30 +38,31 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		return n, nil
 	}
 
-	for {
-		f := s.sess.read(s.id)
-		if f != nil {
-			log.Println(f)
-			switch f.cmd {
-			case cmdPSH:
-				n = copy(b, f.data)
-				if len(f.data) > n {
-					s.buffer = make([]byte, len(f.data)-n)
-					copy(s.buffer, f.data[n:])
-				}
-				log.Println("push", f)
-				return n, nil
+READ:
+	f := s.sess.read(s.id)
+	if f != nil {
+		switch f.cmd {
+		case cmdPSH:
+			n = copy(b, f.data)
+			if len(f.data) > n {
+				s.buffer = make([]byte, len(f.data)-n)
+				copy(s.buffer, f.data[n:])
 			}
+			return n, nil
 		}
 	}
 
-	return 0, nil
+	select {
+	case <-s.chNotifyReader:
+		goto READ
+	}
+
+	return n, nil
 }
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
 	frames := s.split(b, cmdPSH, s.id)
-	log.Println("frames:", len(frames))
 	if len(frames) == 0 {
 		return 0, errors.New("cannot split frame")
 	}
@@ -86,7 +86,6 @@ func (s *Stream) Close() error {
 }
 
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) (frames []Frame) {
-	log.Println("need split:", bts)
 	for uint32(len(bts)) > s.frameSize {
 		frame := newFrame(cmd, sid)
 		frame.data = make([]byte, s.frameSize)

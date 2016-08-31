@@ -2,6 +2,7 @@ package smux
 
 import (
 	"io"
+	"log"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -71,6 +72,8 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 func (s *Session) OpenStream() (*Stream, error) {
 	chNotifyReader := make(chan struct{}, 1)
 	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.rdEvents[s.nextStreamID] = chNotifyReader
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
@@ -90,9 +93,12 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // nonblocking frame read for a session
 func (s *Session) read(sid uint32) *Frame {
-	if len(s.streamLines[sid]) > 0 {
-		f := s.streamLines[sid][0]
-		s.streamLines[sid] = s.streamLines[sid][1:]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	frames := s.streamLines[sid]
+	if len(frames) > 0 {
+		f := frames[0]
+		s.streamLines[sid] = frames[1:]
 		s.tokens <- struct{}{}
 		return &f
 	}
@@ -124,17 +130,23 @@ func (s *Session) recvLoop() {
 		case <-s.tokens:
 			if f, err := s.readFrame(); err == nil {
 				if _, ok := s.streams[f.sid]; ok {
+					s.mu.Lock()
 					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
 					select {
 					case s.rdEvents[f.sid] <- struct{}{}:
 					default:
 					}
+					s.mu.Unlock()
 				} else if f.cmd == cmdSYN {
 					chNotifyReader := make(chan struct{}, 1)
+					s.mu.Lock()
 					s.streams[f.sid] = newStream(f.sid, defaultFrameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
+					s.mu.Unlock()
 					s.chAccepts <- s.streams[f.sid]
 				}
+			} else {
+				log.Println(err)
 			}
 		case <-s.die:
 			return

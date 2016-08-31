@@ -36,7 +36,6 @@ func handleConnection(conn net.Conn) {
 				if err != nil {
 					panic(err)
 				}
-				fmt.Println("server recv:", string(buf[:n]), n)
 				count++
 				stream.Write(buf[:n])
 			}
