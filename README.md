@@ -1,4 +1,4 @@
-***s***imple ***mu***ltiple***x***ing
+# ***s***imple ***mu***ltiple***x***ing
 [![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10]
 
 [1]: https://godoc.org/github.com/xtaci/smux?status.svg
@@ -12,11 +12,11 @@
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
 
-# goals
+## goals
 1. receive window is shared among the streams.
 1. precise memory control.
 1. maximized payload.
 1. optimized for high-speed streams.
 
-# status
+## status
 in-progress
