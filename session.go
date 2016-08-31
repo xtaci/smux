@@ -168,8 +168,12 @@ func (s *Session) monitor() {
 			s.mu.Lock()
 			delete(s.streams, sid)
 			delete(s.rdEvents, sid)
+			ntokens := len(s.streamLines[sid])
 			delete(s.streamLines, sid)
 			s.mu.Unlock()
+			for i := 0; i < ntokens; i++ { // return stream tokens to the pool
+				s.tokens <- struct{}{}
+			}
 		case <-s.die:
 			return
 		}
