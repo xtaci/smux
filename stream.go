@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"io"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -24,9 +25,6 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
-	f := newFrame(cmdSYN, s.id)
-	bts, _ := f.MarshalBinary()
-	sess.lw.Write(bts)
 	return s
 }
 
@@ -42,7 +40,6 @@ READ:
 	f := s.sess.read(s.id)
 	if f != nil {
 		switch f.cmd {
-		case cmdRST:
 		case cmdPSH:
 			n = copy(b, f.data)
 			if len(f.data) > n {
@@ -50,6 +47,8 @@ READ:
 				copy(s.buffer, f.data[n:])
 			}
 			return n, nil
+		default:
+			return 0, io.EOF
 		}
 	}
 

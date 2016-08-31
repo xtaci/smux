@@ -2,7 +2,6 @@ package smux
 
 import (
 	"io"
-	"log"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -73,11 +72,18 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 func (s *Session) OpenStream() (*Stream, error) {
 	chNotifyReader := make(chan struct{}, 1)
 	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
+
+	// track stream
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.rdEvents[s.nextStreamID] = chNotifyReader
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
+	s.mu.Unlock()
+
+	// send SYN packet
+	f := newFrame(cmdSYN, stream.id)
+	bts, _ := f.MarshalBinary()
+	s.lw.Write(bts)
 	return stream, nil
 }
 
@@ -130,7 +136,7 @@ func (s *Session) readFrame() (f Frame, err error) {
 		return f, errors.Wrap(err, "readFrame")
 	}
 
-	dec := RawHeader(h)
+	dec := rawHeader(h)
 	data := h
 	if dec.Length() > 0 {
 		data = make([]byte, headerSize+dec.Length())
@@ -143,6 +149,7 @@ func (s *Session) readFrame() (f Frame, err error) {
 	return f, err
 }
 
+// recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
 	for {
 		select {
@@ -163,7 +170,7 @@ func (s *Session) recvLoop() {
 				}
 				s.mu.Unlock()
 			} else {
-				log.Println(err)
+				return
 			}
 		case <-s.die:
 			return

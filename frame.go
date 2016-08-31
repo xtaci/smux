@@ -60,25 +60,25 @@ func (f *Frame) UnmarshalBinary(bts []byte) error {
 	return nil
 }
 
-type RawHeader []byte
+type rawHeader []byte
 
-func (h RawHeader) Version() byte {
+func (h rawHeader) Version() byte {
 	return h[0]
 }
 
-func (h RawHeader) Cmd() byte {
+func (h rawHeader) Cmd() byte {
 	return h[1]
 }
 
-func (h RawHeader) StreamID() uint32 {
+func (h rawHeader) StreamID() uint32 {
 	return binary.LittleEndian.Uint32(h[2:])
 }
 
-func (h RawHeader) Length() uint32 {
+func (h rawHeader) Length() uint32 {
 	return binary.LittleEndian.Uint32(h[6:])
 }
 
-func (h RawHeader) String() string {
+func (h rawHeader) String() string {
 	return fmt.Sprintf("Version:%d Cmd:%d StreamID:%d Length:%d",
 		h.Version(), h.Cmd(), h.StreamID(), h.Length())
 }

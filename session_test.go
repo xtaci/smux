@@ -36,7 +36,7 @@ func handleConnection(conn net.Conn) {
 			for {
 				n, err := stream.Read(buf)
 				if err != nil {
-					panic(err)
+					return
 				}
 				count++
 				stream.Write(buf[:n])
@@ -62,7 +62,7 @@ func TestEcho(t *testing.T) {
 		if n, err := stream.Read(buf); err == nil {
 			fmt.Println("recv:", string(buf[:n]))
 		} else {
-			panic(err)
+			return
 		}
 	}
 }
