@@ -3,6 +3,8 @@ package smux
 import (
 	"io"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -33,6 +35,9 @@ type Session struct {
 	chAccepts chan *Stream
 	chClose   chan uint32
 	mu        sync.Mutex
+
+	// timeout flag
+	flagTimeout int32
 }
 
 type lockedWriter struct {
@@ -69,6 +74,7 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 	}
 	go s.recvLoop()
 	go s.monitor()
+	go s.keepalive()
 	return s
 }
 
@@ -178,7 +184,9 @@ func (s *Session) recvLoop() {
 		case <-s.tokens:
 			if f, err := s.readFrame(buffer); err == nil {
 				s.mu.Lock()
-				if _, ok := s.streams[f.sid]; ok {
+				if f.cmd == cmdNOP {
+					s.tokens <- struct{}{}
+				} else if _, ok := s.streams[f.sid]; ok {
 					s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
 					select {
 					case s.rdEvents[f.sid] <- struct{}{}:
@@ -192,7 +200,30 @@ func (s *Session) recvLoop() {
 					s.tokens <- struct{}{}
 				}
 				s.mu.Unlock()
+				atomic.StoreInt32(&s.flagTimeout, 1)
 			} else {
+				s.Close()
+				return
+			}
+		case <-s.die:
+			return
+		}
+	}
+}
+
+func (s *Session) keepalive() {
+	tickerPing := time.NewTicker(10 * time.Second)
+	tickerTimeout := time.NewTicker(20 * time.Second)
+	defer tickerPing.Stop()
+	defer tickerTimeout.Stop()
+	for {
+		select {
+		case <-tickerPing.C:
+			f := newFrame(cmdNOP, 0)
+			bts, _ := f.MarshalBinary()
+			s.lw.Write(bts)
+		case <-tickerTimeout.C:
+			if !atomic.CompareAndSwapInt32(&s.flagTimeout, 1, 0) {
 				s.Close()
 				return
 			}
