@@ -3,6 +3,7 @@ package smux
 import (
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"testing"
@@ -34,17 +35,21 @@ func init() {
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn, maxFrames, frameSize)
 	for {
-		stream, _ := session.AcceptStream()
-		go func(s io.ReadWriteCloser) {
-			buf := make([]byte, 65536)
-			for {
-				n, err := s.Read(buf)
-				if err != nil {
-					return
+		if stream, err := session.AcceptStream(); err == nil {
+			go func(s io.ReadWriteCloser) {
+				buf := make([]byte, 65536)
+				for {
+					n, err := s.Read(buf)
+					if err != nil {
+						return
+					}
+					s.Write(buf[:n])
 				}
-				s.Write(buf[:n])
-			}
-		}(stream)
+			}(stream)
+		} else {
+			log.Println(err)
+			return
+		}
 	}
 }
 

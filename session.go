@@ -118,6 +118,9 @@ func (s *Session) Close() error {
 		for k := range s.streams {
 			s.streams[k].Close()
 		}
+		f := newFrame(cmdTerminate, 0)
+		bts, _ := f.MarshalBinary()
+		s.lw.Write(bts)
 	}
 	return nil
 }
