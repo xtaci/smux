@@ -14,7 +14,7 @@ type Stream struct {
 	sess           *Session
 	frameSize      uint32
 	die            chan struct{}
-	mu             sync.Mutex
+	rlock          sync.Mutex
 	buffer         []byte
 }
 
@@ -31,7 +31,7 @@ func newStream(id uint32, frameSize uint32, chNotifyReader chan struct{}, sess *
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
 READ:
-	s.mu.Lock()
+	s.rlock.Lock()
 	if len(s.buffer) > 0 {
 		n = copy(b, s.buffer)
 		s.buffer = s.buffer[n:]
@@ -47,15 +47,15 @@ READ:
 				s.buffer = make([]byte, len(f.data)-n)
 				copy(s.buffer, f.data[n:])
 			}
-			s.mu.Unlock()
+			s.rlock.Unlock()
 			return n, nil
 		default:
-			s.mu.Unlock()
+			s.rlock.Unlock()
 			return 0, io.EOF
 		}
 	}
 
-	s.mu.Unlock()
+	s.rlock.Unlock()
 	select {
 	case <-s.chNotifyReader:
 		goto READ
