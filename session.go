@@ -58,30 +58,29 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 	for i := uint32(0); i < maxframes; i++ {
 		s.tokens <- struct{}{}
 	}
-	go s.recvLoop()
-
 	if client {
 		s.nextStreamID = 1
 	} else {
 		s.nextStreamID = 2
 	}
+	go s.recvLoop()
 	return s
 }
 
 // OpenStream opens a stream on the connection
 func (s *Session) OpenStream() (*Stream, error) {
-
 	// track stream
 	s.mu.Lock()
-	chNotifyReader := make(chan struct{}, 1)
-	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
-	s.rdEvents[s.nextStreamID] = chNotifyReader
-	s.streams[stream.id] = stream
+	sid := s.nextStreamID
 	s.nextStreamID += 2
+	chNotifyReader := make(chan struct{}, 1)
+	stream := newStream(sid, defaultFrameSize, chNotifyReader, s)
+	s.rdEvents[sid] = chNotifyReader
+	s.streams[sid] = stream
 	s.mu.Unlock()
 
 	// send SYN packet
-	f := newFrame(cmdSYN, stream.id)
+	f := newFrame(cmdSYN, sid)
 	bts, _ := f.MarshalBinary()
 	s.lw.Write(bts)
 	return stream, nil
@@ -116,7 +115,7 @@ func (s *Session) streamClose(sid uint32) {
 }
 
 // nonblocking frame read for a session
-func (s *Session) read(sid uint32) *Frame {
+func (s *Session) nioread(sid uint32) *Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	frames := s.streamLines[sid]

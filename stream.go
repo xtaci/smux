@@ -37,7 +37,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	}
 
 READ:
-	f := s.sess.read(s.id)
+	f := s.sess.nioread(s.id)
 	if f != nil {
 		switch f.cmd {
 		case cmdPSH:
@@ -56,7 +56,6 @@ READ:
 	case <-s.chNotifyReader:
 		goto READ
 	}
-
 	return n, nil
 }
 

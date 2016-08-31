@@ -29,21 +29,18 @@ func init() {
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn)
 	buf := make([]byte, 65536)
-	count := 0
 	for {
 		stream, _ := session.AcceptStream()
-		go func(stream io.ReadWriteCloser) {
+		go func(s io.ReadWriteCloser) {
 			for {
-				n, err := stream.Read(buf)
+				n, err := s.Read(buf)
 				if err != nil {
 					return
 				}
-				count++
-				stream.Write(buf[:n])
+				s.Write(buf[:n])
 			}
 		}(stream)
 	}
-
 }
 
 func TestEcho(t *testing.T) {
@@ -101,6 +98,35 @@ func TestSpeed(t *testing.T) {
 	msg := make([]byte, 4096)
 	for i := 0; i < 4096; i++ {
 		stream.Write(msg)
+	}
+	wg.Wait()
+}
+
+func TestParallel(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli)
+
+	par := 1000
+	messages := 100
+	var wg sync.WaitGroup
+	wg.Add(par)
+	fmt.Println("testing parallel", par, "connections")
+	for i := 0; i < par; i++ {
+		stream, _ := session.OpenStream()
+		go func(s *Stream) {
+			buf := make([]byte, 20)
+			for j := 0; j < messages; j++ {
+				msg := fmt.Sprintf("hello%v", j)
+				s.Write([]byte(msg))
+				if _, err := s.Read(buf); err != nil {
+					break
+				}
+			}
+			wg.Done()
+		}(stream)
 	}
 	wg.Wait()
 }
