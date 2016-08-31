@@ -70,14 +70,14 @@ func newSession(maxframes uint32, conn io.ReadWriteCloser, client bool) *Session
 
 // OpenStream opens a stream on the connection
 func (s *Session) OpenStream() (*Stream, error) {
-	chNotifyReader := make(chan struct{}, 1)
-	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
 
 	// track stream
 	s.mu.Lock()
+	chNotifyReader := make(chan struct{}, 1)
+	stream := newStream(s.nextStreamID, defaultFrameSize, chNotifyReader, s)
 	s.rdEvents[s.nextStreamID] = chNotifyReader
-	s.nextStreamID += 2
 	s.streams[stream.id] = stream
+	s.nextStreamID += 2
 	s.mu.Unlock()
 
 	// send SYN packet
