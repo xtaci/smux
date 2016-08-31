@@ -2,6 +2,7 @@ package smux
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"testing"
 )
@@ -28,8 +29,8 @@ func handleConnection(conn net.Conn) {
 	buf := make([]byte, 65536)
 	count := 0
 	for {
-		stream, _ := session.Accept()
-		go func(stream net.Conn) {
+		stream, _ := session.AcceptStream()
+		go func(stream io.ReadWriteCloser) {
 			for {
 				n, err := stream.Read(buf)
 				if err != nil {

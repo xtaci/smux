@@ -2,9 +2,7 @@ package smux
 
 import (
 	"log"
-	"net"
 	"sync"
-	"time"
 
 	"github.com/pkg/errors"
 )
@@ -14,8 +12,6 @@ type Stream struct {
 	id             uint32
 	chNotifyReader chan struct{}
 	sess           *Session
-	readDeadline   time.Time
-	writeDeadline  time.Time
 	frameSize      uint32
 	die            chan struct{}
 	mu             sync.Mutex
@@ -86,41 +82,6 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 	}
-	return nil
-}
-
-// LocalAddr is used to get the local address of the
-// underlying connection.
-func (s *Stream) LocalAddr() net.Addr {
-	return nil
-}
-
-// RemoteAddr is used to get the address of remote end
-// of the underlying connection
-func (s *Stream) RemoteAddr() net.Addr {
-	return nil
-}
-
-// SetDeadline sets the read and write deadlines
-func (s *Stream) SetDeadline(t time.Time) error {
-	if err := s.SetReadDeadline(t); err != nil {
-		return err
-	}
-	if err := s.SetWriteDeadline(t); err != nil {
-		return err
-	}
-	return nil
-}
-
-// SetReadDeadline sets the deadline for future Read calls.
-func (s *Stream) SetReadDeadline(t time.Time) error {
-	s.readDeadline = t
-	return nil
-}
-
-// SetWriteDeadline sets the deadline for future Write calls
-func (s *Stream) SetWriteDeadline(t time.Time) error {
-	s.writeDeadline = t
 	return nil
 }
 

@@ -2,7 +2,6 @@ package smux
 
 import (
 	"io"
-	"net"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -76,25 +75,6 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.nextStreamID += 2
 	s.streams[stream.id] = stream
 	return stream, nil
-}
-
-// Open is used to create a new stream as a net.Conn
-func (s *Session) Open() (net.Conn, error) {
-	conn, err := s.OpenStream()
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
-
-// Accept is used to block until the next available stream
-// is ready to be accepted.
-func (s *Session) Accept() (net.Conn, error) {
-	conn, err := s.AcceptStream()
-	if err != nil {
-		return nil, err
-	}
-	return conn, err
 }
 
 // AcceptStream is used to block until the next available stream
