@@ -178,7 +178,7 @@ func (s *Session) monitor() {
 
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
-	buffer := make([]byte, 1<<16)
+	buffer := make([]byte, (1<<16)+headerSize)
 	for {
 		select {
 		case <-s.tokens:
