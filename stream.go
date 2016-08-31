@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"bytes"
 	"io"
 	"sync"
 
@@ -78,11 +79,14 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
+	var combined bytes.Buffer
 	for k := range frames {
 		bts, _ := frames[k].MarshalBinary()
-		if _, err = s.sess.lw.Write(bts); err != nil {
-			return 0, err
-		}
+		combined.Write(bts)
+	}
+
+	if _, err = s.sess.lw.Write(combined.Bytes()); err != nil {
+		return 0, err
 	}
 	return len(b), nil
 }
