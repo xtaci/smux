@@ -24,20 +24,18 @@ type Session struct {
 	nextStreamID uint32
 	streams      map[uint32]*Stream
 	frameSize    uint16
+	rdEvents     map[uint32]chan struct{}
 
-	// rx pool control
+	// token controlled read buffer
 	tokens      chan struct{}
 	streamLines map[uint32][]Frame
-	rdEvents    map[uint32]chan struct{}
 
-	// control
+	//
 	die       chan struct{}
 	chAccepts chan *Stream
 	chClose   chan uint32
+	dataReady int32
 	mu        sync.Mutex
-
-	// timeout flag
-	flagTimeout int32
 }
 
 type lockedWriter struct {
@@ -204,7 +202,7 @@ func (s *Session) recvLoop() {
 					s.tokens <- struct{}{}
 				}
 				s.mu.Unlock()
-				atomic.StoreInt32(&s.flagTimeout, 1)
+				atomic.StoreInt32(&s.dataReady, 1)
 			} else {
 				s.Close()
 				return
@@ -227,7 +225,7 @@ func (s *Session) keepalive() {
 			bts, _ := f.MarshalBinary()
 			s.lw.Write(bts)
 		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.flagTimeout, 1, 0) {
+			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
 				return
 			}
