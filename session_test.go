@@ -28,10 +28,10 @@ func init() {
 
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn)
-	buf := make([]byte, 65536)
 	for {
 		stream, _ := session.AcceptStream()
 		go func(s io.ReadWriteCloser) {
+			buf := make([]byte, 65536)
 			for {
 				n, err := s.Read(buf)
 				if err != nil {
