@@ -18,7 +18,7 @@ const ( // cmds
 const (
 	sizeOfVer    = 1
 	sizeOfCmd    = 1
-	sizeOfLength = 4
+	sizeOfLength = 2
 	sizeOfSid    = 4
 	headerSize   = sizeOfVer + sizeOfCmd + sizeOfSid + sizeOfLength
 )
@@ -36,13 +36,13 @@ func newFrame(cmd byte, sid uint32) Frame {
 }
 
 // MarshalBinary a frame to transmit
-// VERSION(1B) | CMD(1B) | STREAMID(4B) | LENGTH(4B) | DATA  |
+// VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA  |
 func (f *Frame) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, headerSize+len(f.data))
 	buf[0] = version
 	buf[1] = f.cmd
-	binary.LittleEndian.PutUint32(buf[2:], f.sid)
-	binary.LittleEndian.PutUint32(buf[6:], uint32(len(f.data)))
+	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
+	binary.LittleEndian.PutUint32(buf[4:], f.sid)
 	copy(buf[headerSize:], f.data)
 	return buf, nil
 }
@@ -51,8 +51,8 @@ func (f *Frame) MarshalBinary() ([]byte, error) {
 func (f *Frame) UnmarshalBinary(bts []byte) error {
 	f.ver = bts[0]
 	f.cmd = bts[1]
-	f.sid = binary.LittleEndian.Uint32(bts[2:])
-	datalength := binary.LittleEndian.Uint32(bts[6:])
+	datalength := binary.LittleEndian.Uint16(bts[2:])
+	f.sid = binary.LittleEndian.Uint32(bts[4:])
 	if datalength > 0 {
 		f.data = make([]byte, datalength)
 		copy(f.data, bts[headerSize:])
@@ -70,12 +70,12 @@ func (h rawHeader) Cmd() byte {
 	return h[1]
 }
 
-func (h rawHeader) StreamID() uint32 {
-	return binary.LittleEndian.Uint32(h[2:])
+func (h rawHeader) Length() uint16 {
+	return binary.LittleEndian.Uint16(h[2:])
 }
 
-func (h rawHeader) Length() uint32 {
-	return binary.LittleEndian.Uint32(h[6:])
+func (h rawHeader) StreamID() uint32 {
+	return binary.LittleEndian.Uint32(h[4:])
 }
 
 func (h rawHeader) String() string {

@@ -101,8 +101,8 @@ func TestSpeed(t *testing.T) {
 		fmt.Println("time for 16MB rtt", time.Now().Sub(start))
 		wg.Done()
 	}()
-	msg := make([]byte, 4096)
-	for i := 0; i < 4096; i++ {
+	msg := make([]byte, 8192)
+	for i := 0; i < 2048; i++ {
 		stream.Write(msg)
 	}
 	wg.Wait()
