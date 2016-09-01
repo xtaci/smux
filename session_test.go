@@ -11,6 +11,7 @@ import (
 )
 
 func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	ln, err := net.Listen("tcp", "127.0.0.1:19999")
 	if err != nil {
 		// handle error
@@ -150,6 +151,37 @@ func TestCloseThenOpen(t *testing.T) {
 	if _, err := session.OpenStream(); err == nil {
 		t.Fatal("opened after close")
 	}
+}
+
+func TestTinyReadBuffer(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	const N = 100
+	tinybuf := make([]byte, 6)
+	for i := 0; i < N; i++ {
+		msg := fmt.Sprintf("hello%v", i)
+		fmt.Println("sent:", msg)
+		nsent, err := stream.Write([]byte(msg))
+		if err != nil {
+			t.Fatal("cannot write")
+		}
+		nrecv := 0
+		for nrecv < nsent {
+			fmt.Println(nrecv, nsent)
+			if n, err := stream.Read(tinybuf); err == nil {
+				fmt.Println("recv:", string(tinybuf[:n]))
+				nrecv += n
+			} else {
+				t.Fatal("cannot read with tiny buffer")
+			}
+		}
+		fmt.Println("#", nrecv, nsent)
+	}
+	session.Close()
 }
 
 func TestIsClose(t *testing.T) {

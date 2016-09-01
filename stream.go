@@ -43,6 +43,7 @@ READ:
 	if len(s.buffer) > 0 {
 		n = copy(b, s.buffer)
 		s.buffer = s.buffer[n:]
+		s.rlock.Unlock()
 		return n, nil
 	}
 
