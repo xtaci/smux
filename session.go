@@ -95,18 +95,19 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	select {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
-		s.mu.Lock()
 		for k := range s.streams {
 			s.streams[k].Close()
 		}
 		s.sendFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
-		s.mu.Unlock()
 	}
 	return nil
 }
@@ -114,9 +115,8 @@ func (s *Session) Close() error {
 // NumStreams returns the number of currently open streams
 func (s *Session) NumStreams() int {
 	s.mu.Lock()
-	num := len(s.streams)
-	s.mu.Unlock()
-	return num
+	defer s.mu.Unlock()
+	return len(s.streams)
 }
 
 func (s *Session) streamClose(sid uint32) {
