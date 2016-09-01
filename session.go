@@ -31,11 +31,11 @@ type Session struct {
 	tbf         chan struct{}      // tokenbuffer
 	frameQueues map[uint32][]Frame // stream input frame queue
 
-	die       chan struct{} // flag session has died
-	chAccepts chan *Stream
-	chClose   chan uint32
-	dataReady int32 // flag data has arrived
-	mu        sync.Mutex
+	die           chan struct{} // flag session has died
+	chAccepts     chan *Stream
+	chActiveClose chan uint32
+	dataReady     int32 // flag data has arrived
+	mu            sync.Mutex
 }
 
 func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize uint16) *Session {
@@ -47,7 +47,7 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 	s.frameQueues = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
-	s.chClose = make(chan uint32, defaultCloseWait)
+	s.chActiveClose = make(chan uint32, defaultCloseWait)
 	s.die = make(chan struct{})
 	for i := 0; i < maxframes; i++ {
 		s.tbf <- struct{}{}
@@ -130,8 +130,8 @@ func (s *Session) NumStreams() int {
 }
 
 // notify the session that a session has closed
-func (s *Session) streamClose(sid uint32) {
-	s.chClose <- sid
+func (s *Session) streamActiveClose(sid uint32) {
+	s.chActiveClose <- sid
 }
 
 // nonblocking read from session pool, for streams
@@ -175,7 +175,7 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 func (s *Session) monitor() {
 	for {
 		select {
-		case sid := <-s.chClose:
+		case sid := <-s.chActiveClose:
 			s.mu.Lock()
 			delete(s.streams, sid)
 			delete(s.rdEvents, sid)

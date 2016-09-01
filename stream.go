@@ -14,9 +14,10 @@ type Stream struct {
 	chNotifyReader chan struct{}
 	sess           *Session
 	frameSize      uint16
-	die            chan struct{}
-	rlock          sync.Mutex
-	buffer         []byte
+	rlock          sync.Mutex    // read lock
+	buffer         []byte        // temporary store of remaining frame.data
+	die            chan struct{} // flag the stream has closed
+	dieLock        sync.Mutex
 }
 
 // newStream initiates a Stream struct
@@ -94,15 +95,16 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 // Close implements io.ReadWriteCloser
 func (s *Stream) Close() error {
+	s.dieLock.Lock()
+	defer s.dieLock.Unlock()
+
 	select {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
-		s.sess.streamClose(s.id)
-		f := newFrame(cmdRST, s.id)
-		bts, _ := f.MarshalBinary()
-		s.sess.conn.Write(bts)
+		s.sess.streamActiveClose(s.id)
+		s.sess.sendFrame(newFrame(cmdRST, s.id))
 	}
 	return nil
 }
