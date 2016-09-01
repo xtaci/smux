@@ -30,13 +30,14 @@ type Session struct {
 
 	tbf         chan struct{}      // tokenbuffer
 	frameQueues map[uint32][]Frame // stream input frame queue
+	streamLock  sync.Mutex         // locks streams/rdEvents/frameQueues
 
 	die            chan struct{} // flag session has died
+	dieLock        sync.Mutex
 	chAccepts      chan *Stream
 	chClosedStream chan uint32
 
 	dataReady int32 // flag data has arrived
-	mu        sync.Mutex
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -74,10 +75,10 @@ func (s *Session) OpenStream() (*Stream, error) {
 	chNotifyReader := make(chan struct{}, 1)
 	stream := newStream(sid, s.config.MaxFrameSize, chNotifyReader, s)
 
-	s.mu.Lock()
+	s.streamLock.Lock()
 	s.rdEvents[sid] = chNotifyReader
 	s.streams[sid] = stream
-	s.mu.Unlock()
+	s.streamLock.Unlock()
 
 	s.sendFrame(newFrame(cmdSYN, sid))
 	return stream, nil
@@ -96,16 +97,18 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.dieLock.Lock()
+	defer s.dieLock.Unlock()
 
 	select {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
+		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].Close()
 		}
+		s.streamLock.Unlock()
 		s.sendFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
 		close(s.die)
@@ -125,8 +128,8 @@ func (s *Session) IsClosed() bool {
 
 // NumStreams returns the number of currently open streams
 func (s *Session) NumStreams() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.streamLock.Lock()
+	defer s.streamLock.Unlock()
 	return len(s.streams)
 }
 
@@ -142,16 +145,16 @@ func (s *Session) streamClosed(sid uint32) {
 
 // nonblocking read from session pool, for streams
 func (s *Session) nioread(sid uint32) *Frame {
-	s.mu.Lock()
+	s.streamLock.Lock()
 	frames := s.frameQueues[sid]
 	if len(frames) > 0 {
 		f := frames[0]
 		s.frameQueues[sid] = frames[1:]
 		s.tbf <- struct{}{}
-		s.mu.Unlock()
+		s.streamLock.Unlock()
 		return &f
 	}
-	s.mu.Unlock()
+	s.streamLock.Unlock()
 	return nil
 }
 
@@ -182,12 +185,12 @@ func (s *Session) monitor() {
 	for {
 		select {
 		case sid := <-s.chClosedStream:
-			s.mu.Lock()
+			s.streamLock.Lock()
 			delete(s.streams, sid)
 			delete(s.rdEvents, sid)
 			ntokens := len(s.frameQueues[sid])
 			delete(s.frameQueues, sid)
-			s.mu.Unlock()
+			s.streamLock.Unlock()
 			for i := 0; i < ntokens; i++ { // return remaining tokens to the pool
 				s.tbf <- struct{}{}
 			}
@@ -211,7 +214,7 @@ func (s *Session) recvLoop() {
 					s.Close()
 					return
 				case cmdSYN:
-					s.mu.Lock()
+					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; !ok {
 						chNotifyReader := make(chan struct{}, 1)
 						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
@@ -220,18 +223,18 @@ func (s *Session) recvLoop() {
 					} else { // stream exists, RST the peer
 						s.sendFrame(newFrame(cmdRST, f.sid))
 					}
-					s.mu.Unlock()
+					s.streamLock.Unlock()
 					s.tbf <- struct{}{}
 				case cmdRST:
-					s.mu.Lock()
+					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; ok {
 						s.streams[f.sid].Close()
 					} else { // must do nothing if stream is absent
 					}
-					s.mu.Unlock()
+					s.streamLock.Unlock()
 					s.tbf <- struct{}{}
 				case cmdPSH:
-					s.mu.Lock()
+					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; ok {
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						select {
@@ -242,7 +245,7 @@ func (s *Session) recvLoop() {
 						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}
 					}
-					s.mu.Unlock()
+					s.streamLock.Unlock()
 				default:
 					s.sendFrame(newFrame(cmdRST, f.sid))
 				}
