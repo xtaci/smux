@@ -92,11 +92,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.rdEvents[sid] = chNotifyReader
 	s.streams[sid] = stream
 	s.mu.Unlock()
-
-	// cmdSYN
-	f := newFrame(cmdSYN, sid)
-	bts, _ := f.MarshalBinary()
-	s.lw.Write(bts)
+	s.sendFrame(newFrame(cmdSYN, sid))
 	return stream, nil
 }
 
@@ -119,14 +115,12 @@ func (s *Session) Close() error {
 	default:
 		close(s.die)
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		for k := range s.streams {
 			s.streams[k].Close()
 		}
-		f := newFrame(cmdTerminate, 0)
-		bts, _ := f.MarshalBinary()
-		s.lw.Write(bts)
+		s.sendFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
+		s.mu.Unlock()
 	}
 	return nil
 }
@@ -251,7 +245,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.sendNOP()
+			s.sendFrame(newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
@@ -263,8 +257,7 @@ func (s *Session) keepalive() {
 	}
 }
 
-func (s *Session) sendNOP() {
-	f := newFrame(cmdNOP, 0)
+func (s *Session) sendFrame(f Frame) {
 	bts, _ := f.MarshalBinary()
 	s.lw.Write(bts)
 }
