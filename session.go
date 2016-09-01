@@ -23,7 +23,6 @@ const (
 type Session struct {
 	// connection related
 	conn io.ReadWriteCloser
-	lw   *lockedWriter
 
 	// stream related
 	nextStreamID uint32
@@ -43,23 +42,10 @@ type Session struct {
 	mu        sync.Mutex
 }
 
-type lockedWriter struct {
-	mu   sync.Mutex
-	conn io.Writer
-}
-
-func (lw *lockedWriter) Write(p []byte) (n int, err error) {
-	lw.mu.Lock()
-	n, err = lw.conn.Write(p)
-	lw.mu.Unlock()
-	return
-}
-
 func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize uint16) *Session {
 	s := new(Session)
 	s.conn = conn
 	s.frameSize = framesize
-	s.lw = &lockedWriter{conn: conn}
 	s.streams = make(map[uint32]*Stream)
 	s.tbf = make(chan struct{}, maxframes)
 	s.streamLines = make(map[uint32][]Frame)
@@ -259,5 +245,5 @@ func (s *Session) keepalive() {
 
 func (s *Session) sendFrame(f Frame) {
 	bts, _ := f.MarshalBinary()
-	s.lw.Write(bts)
+	s.conn.Write(bts)
 }

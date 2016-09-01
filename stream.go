@@ -86,7 +86,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		combined.Write(bts)
 	}
 
-	if _, err = s.sess.lw.Write(combined.Bytes()); err != nil {
+	if _, err = s.sess.conn.Write(combined.Bytes()); err != nil {
 		return 0, err
 	}
 	return len(b), nil
@@ -102,7 +102,7 @@ func (s *Stream) Close() error {
 		s.sess.streamClose(s.id)
 		f := newFrame(cmdRST, s.id)
 		bts, _ := f.MarshalBinary()
-		s.sess.lw.Write(bts)
+		s.sess.conn.Write(bts)
 	}
 	return nil
 }
