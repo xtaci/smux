@@ -215,7 +215,12 @@ func (s *Session) recvLoop() {
 						s.sendFrame(newFrame(cmdRST, f.sid))
 					}
 					s.tbf <- struct{}{}
-				default:
+				case cmdRST:
+					if _, ok := s.streams[f.sid]; ok {
+						s.streams[f.sid].Close()
+					}
+					s.tbf <- struct{}{}
+				case cmdPSH:
 					if _, ok := s.streams[f.sid]; ok {
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						select {
@@ -226,6 +231,8 @@ func (s *Session) recvLoop() {
 						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}
 					}
+				default:
+					s.sendFrame(newFrame(cmdRST, f.sid))
 				}
 				s.mu.Unlock()
 				atomic.StoreInt32(&s.dataReady, 1)
