@@ -218,6 +218,7 @@ func (s *Session) recvLoop() {
 				case cmdRST:
 					if _, ok := s.streams[f.sid]; ok {
 						s.streams[f.sid].Close()
+					} else { // must do nothing if stream is absent
 					}
 					s.tbf <- struct{}{}
 				case cmdPSH:
@@ -227,7 +228,7 @@ func (s *Session) recvLoop() {
 						case s.rdEvents[f.sid] <- struct{}{}:
 						default:
 						}
-					} else { // stream absent
+					} else { // stream is absent
 						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}
 					}
