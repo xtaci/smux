@@ -237,7 +237,8 @@ func (s *Session) recvLoop() {
 					}
 					s.streamLock.Unlock()
 				default:
-					s.sendFrame(newFrame(cmdRST, f.sid))
+					s.Close()
+					return
 				}
 				atomic.StoreInt32(&s.dataReady, 1)
 			} else {
