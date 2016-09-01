@@ -206,10 +206,14 @@ func (s *Session) recvLoop() {
 					s.Close()
 					return
 				case cmdSYN:
-					chNotifyReader := make(chan struct{}, 1)
-					s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
-					s.rdEvents[f.sid] = chNotifyReader
-					s.chAccepts <- s.streams[f.sid]
+					if _, ok := s.streams[f.sid]; !ok {
+						chNotifyReader := make(chan struct{}, 1)
+						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
+						s.rdEvents[f.sid] = chNotifyReader
+						s.chAccepts <- s.streams[f.sid]
+					} else { // stream exists, RST the peer
+						s.sendFrame(newFrame(cmdRST, f.sid))
+					}
 					s.tbf <- struct{}{}
 				default:
 					if _, ok := s.streams[f.sid]; ok {
