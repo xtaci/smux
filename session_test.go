@@ -53,16 +53,6 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-func TestNOP(t *testing.T) {
-	cli, err := net.Dial("tcp", "127.0.0.1:19999")
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _ := Client(cli, maxFrames, frameSize)
-	session.sendNOP()
-	session.Close()
-}
-
 func TestEcho(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
