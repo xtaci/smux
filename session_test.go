@@ -1,9 +1,12 @@
 package smux
 
 import (
+	crand "crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"testing"
@@ -294,9 +297,76 @@ func TestSendWithoutRecv(t *testing.T) {
 		msg := fmt.Sprintf("hello%v", i)
 		stream.Write([]byte(msg))
 	}
-	buf := make([]byte, 1024)
+	buf := make([]byte, 1)
 	if _, err := stream.Read(buf); err != nil {
 		t.Fatal(err)
+	}
+	session.Close()
+}
+
+func TestRandomFrame(t *testing.T) {
+	// double syn
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(cmdSYN, 1000)
+		session.sendFrame(f)
+	}
+	session.Close()
+
+	// random cmds
+	cli, err = net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allcmds := []byte{cmdSYN, cmdRST, cmdPSH, cmdNOP, cmdTerminate}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		session.sendFrame(f)
+	}
+	session.Close()
+
+	cli, err = net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		session.sendFrame(f)
+	}
+	session.Close()
+
+	cli, err = net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		f.ver = byte(rand.Uint32())
+		session.sendFrame(f)
+	}
+	session.Close()
+
+	cli, err = net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		f.ver = byte(rand.Uint32())
+		bts, _ := f.MarshalBinary()
+		rnd := make([]byte, rand.Uint32()%1024)
+		io.ReadFull(crand.Reader, rnd)
+		bts = append(bts, rnd...)
+		binary.LittleEndian.PutUint16(bts[2:], uint16(rand.Uint32()))
+		session.conn.Write(bts)
 	}
 	session.Close()
 }
