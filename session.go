@@ -65,14 +65,19 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
-	s.mu.Lock()
-	sid := s.nextStreamID
-	s.nextStreamID += 2
+	if s.IsClosed() {
+		return nil, errors.New(errBrokenPipe)
+	}
+
+	sid := atomic.AddUint32(&s.nextStreamID, 2)
 	chNotifyReader := make(chan struct{}, 1)
 	stream := newStream(sid, s.frameSize, chNotifyReader, s)
+
+	s.mu.Lock()
 	s.rdEvents[sid] = chNotifyReader
 	s.streams[sid] = stream
 	s.mu.Unlock()
+
 	s.sendFrame(newFrame(cmdSYN, sid))
 	return stream, nil
 }
@@ -105,6 +110,16 @@ func (s *Session) Close() error {
 		s.conn.Close()
 	}
 	return nil
+}
+
+// IsClosed does a safe check to see if we have shutdown
+func (s *Session) IsClosed() bool {
+	select {
+	case <-s.die:
+		return true
+	default:
+		return false
+	}
 }
 
 // NumStreams returns the number of currently open streams
