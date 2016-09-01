@@ -10,11 +10,6 @@ import (
 	"time"
 )
 
-const (
-	maxFrames = 4096
-	frameSize = 4096
-)
-
 func init() {
 	ln, err := net.Listen("tcp", "127.0.0.1:19999")
 	if err != nil {
@@ -33,7 +28,7 @@ func init() {
 }
 
 func handleConnection(conn net.Conn) {
-	session, _ := Server(conn, maxFrames, frameSize)
+	session, _ := Server(conn, nil)
 	for {
 		if stream, err := session.AcceptStream(); err == nil {
 			go func(s io.ReadWriteCloser) {
@@ -58,7 +53,7 @@ func TestEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, _ := Client(cli, maxFrames, frameSize)
+	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	const N = 100
 	buf := make([]byte, 10)
@@ -80,7 +75,7 @@ func TestSpeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, _ := Client(cli, maxFrames, frameSize)
+	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 
 	start := time.Now()
@@ -119,7 +114,7 @@ func TestParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, _ := Client(cli, maxFrames, frameSize)
+	session, _ := Client(cli, nil)
 
 	par := 1000
 	messages := 100

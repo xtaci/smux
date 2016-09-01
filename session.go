@@ -23,9 +23,9 @@ const (
 type Session struct {
 	conn io.ReadWriteCloser
 
+	config       *Config
 	nextStreamID uint32                   // next stream identifier
 	streams      map[uint32]*Stream       // all streams in this session
-	frameSize    uint16                   // max frame size
 	rdEvents     map[uint32]chan struct{} // stream read notification
 
 	tbf         chan struct{}      // tokenbuffer
@@ -38,18 +38,18 @@ type Session struct {
 	mu            sync.Mutex
 }
 
-func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize uint16) *Session {
+func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
+	s.die = make(chan struct{})
 	s.conn = conn
-	s.frameSize = framesize
+	s.config = config
 	s.streams = make(map[uint32]*Stream)
-	s.tbf = make(chan struct{}, maxframes)
 	s.frameQueues = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chActiveClose = make(chan uint32, defaultCloseWait)
-	s.die = make(chan struct{})
-	for i := 0; i < maxframes; i++ {
+	s.tbf = make(chan struct{}, config.MaxFrameTokens)
+	for i := 0; i < config.MaxFrameTokens; i++ {
 		s.tbf <- struct{}{}
 	}
 	if client {
@@ -71,7 +71,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
 	chNotifyReader := make(chan struct{}, 1)
-	stream := newStream(sid, s.frameSize, chNotifyReader, s)
+	stream := newStream(sid, s.config.MaxFrameSize, chNotifyReader, s)
 
 	s.mu.Lock()
 	s.rdEvents[sid] = chNotifyReader
@@ -207,7 +207,7 @@ func (s *Session) recvLoop() {
 					return
 				case cmdSYN:
 					chNotifyReader := make(chan struct{}, 1)
-					s.streams[f.sid] = newStream(f.sid, s.frameSize, chNotifyReader, s)
+					s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
 					s.rdEvents[f.sid] = chNotifyReader
 					s.chAccepts <- s.streams[f.sid]
 					s.tbf <- struct{}{}
@@ -235,8 +235,8 @@ func (s *Session) recvLoop() {
 }
 
 func (s *Session) keepalive() {
-	tickerPing := time.NewTicker(10 * time.Second)
-	tickerTimeout := time.NewTicker(20 * time.Second)
+	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
+	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
 	defer tickerPing.Stop()
 	defer tickerTimeout.Stop()
 	for {
