@@ -294,6 +294,10 @@ func TestSendWithoutRecv(t *testing.T) {
 		msg := fmt.Sprintf("hello%v", i)
 		stream.Write([]byte(msg))
 	}
+	buf := make([]byte, 1024)
+	if _, err := stream.Read(buf); err != nil {
+		t.Fatal(err)
+	}
 	session.Close()
 }
 
