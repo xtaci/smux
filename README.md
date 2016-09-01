@@ -22,8 +22,8 @@ Smux (***S***imple ***MU***ltiple***X***ing) is a multiplexing library for Golan
 
 1. Tiny, less than 500 LOC.
 2. Token controlled receive buffer, which provides smooth bandwidth usage curve(see picture below).
-3. Receive buffer is own by session and is shared across streams.
-4. Minimized header(8Bytes), maxmized payload. 
+3. Receive buffer is owned by session and shared among streams.
+4. Minimized header(8Bytes), maximized payload. 
 
 ![smooth bandwidth curve](curve.jpg)
 
