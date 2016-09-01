@@ -221,6 +221,59 @@ func TestKeepAliveTimeout(t *testing.T) {
 	}
 }
 
+func TestServerEcho(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:39999")
+	if err != nil {
+		// handle error
+		panic(err)
+	}
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			session, _ := Server(conn, nil)
+			if stream, err := session.OpenStream(); err == nil {
+				const N = 100
+				buf := make([]byte, 10)
+				for i := 0; i < N; i++ {
+					msg := fmt.Sprintf("hello%v", i)
+					fmt.Println("sent:", msg)
+					stream.Write([]byte(msg))
+					if n, err := stream.Read(buf); err == nil {
+						fmt.Println("recv:", string(buf[:n]))
+					} else {
+						return
+					}
+				}
+				stream.Close()
+			} else {
+				t.Fatal(err)
+			}
+		} else {
+			t.Fatal(err)
+		}
+	}()
+
+	cli, err := net.Dial("tcp", "127.0.0.1:39999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, err := Client(cli, nil); err == nil {
+		if stream, err := session.AcceptStream(); err == nil {
+			buf := make([]byte, 65536)
+			for {
+				n, err := stream.Read(buf)
+				if err != nil {
+					break
+				}
+				stream.Write(buf[:n])
+			}
+		} else {
+			t.Fatal(err)
+		}
+	} else {
+		t.Fatal(err)
+	}
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
