@@ -140,6 +140,55 @@ func TestParallel(t *testing.T) {
 	session.Close()
 }
 
+func TestCloseThenOpen(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	session.Close()
+	if _, err := session.OpenStream(); err == nil {
+		t.Fatal("opened after close")
+	}
+}
+
+func TestIsClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	session.Close()
+	if session.IsClosed() != true {
+		t.Fatal("still open after close")
+	}
+}
+
+func TestKeepAliveTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:29999")
+	if err != nil {
+		// handle error
+		panic(err)
+	}
+	go func() {
+		ln.Accept()
+	}()
+
+	cli, err := net.Dial("tcp", "127.0.0.1:29999")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config := DefaultConfig()
+	config.KeepAliveInterval = 1
+	config.KeepAliveTimeout = 2
+	session, _ := Client(cli, config)
+	<-time.After(3 * time.Second)
+	if session.IsClosed() != true {
+		t.Fatal("keepalive-timeout failed")
+	}
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
