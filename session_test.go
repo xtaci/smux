@@ -58,15 +58,20 @@ func TestEcho(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 100
 	buf := make([]byte, 10)
+	var sent string
+	var received string
 	for i := 0; i < N; i++ {
 		msg := fmt.Sprintf("hello%v", i)
-		fmt.Println("sent:", msg)
 		stream.Write([]byte(msg))
-		if n, err := stream.Read(buf); err == nil {
-			fmt.Println("recv:", string(buf[:n]))
+		sent += msg
+		if n, err := stream.Read(buf); err != nil {
+			t.Fatal(err)
 		} else {
-			return
+			received += string(buf[:n])
 		}
+	}
+	if sent != received {
+		t.Fatal("data mimatch")
 	}
 	session.Close()
 }
@@ -88,7 +93,7 @@ func TestSpeed(t *testing.T) {
 		for {
 			n, err := stream.Read(buf)
 			if err != nil {
-				fmt.Println(err)
+				t.Fatal(err)
 				break
 			} else {
 				nrecv += n
@@ -162,24 +167,28 @@ func TestTinyReadBuffer(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 100
 	tinybuf := make([]byte, 6)
+	var sent string
+	var received string
 	for i := 0; i < N; i++ {
 		msg := fmt.Sprintf("hello%v", i)
-		fmt.Println("sent:", msg)
+		sent += msg
 		nsent, err := stream.Write([]byte(msg))
 		if err != nil {
 			t.Fatal("cannot write")
 		}
 		nrecv := 0
 		for nrecv < nsent {
-			fmt.Println(nrecv, nsent)
 			if n, err := stream.Read(tinybuf); err == nil {
-				fmt.Println("recv:", string(tinybuf[:n]))
 				nrecv += n
+				received += string(tinybuf[:n])
 			} else {
 				t.Fatal("cannot read with tiny buffer")
 			}
 		}
-		fmt.Println("#", nrecv, nsent)
+	}
+
+	if sent != received {
+		t.Fatal("data mimatch")
 	}
 	session.Close()
 }
@@ -235,12 +244,11 @@ func TestServerEcho(t *testing.T) {
 				buf := make([]byte, 10)
 				for i := 0; i < N; i++ {
 					msg := fmt.Sprintf("hello%v", i)
-					fmt.Println("sent:", msg)
 					stream.Write([]byte(msg))
-					if n, err := stream.Read(buf); err == nil {
-						fmt.Println("recv:", string(buf[:n]))
-					} else {
-						return
+					if n, err := stream.Read(buf); err != nil {
+						t.Fatal(err)
+					} else if string(buf[:n]) != msg {
+						t.Fatal(err)
 					}
 				}
 				stream.Close()
@@ -272,6 +280,21 @@ func TestServerEcho(t *testing.T) {
 	} else {
 		t.Fatal(err)
 	}
+}
+
+func TestSendWithoutRecv(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	const N = 100
+	for i := 0; i < N; i++ {
+		msg := fmt.Sprintf("hello%v", i)
+		stream.Write([]byte(msg))
+	}
+	session.Close()
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
