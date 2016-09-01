@@ -1,4 +1,4 @@
-# ***s***imple ***mu***ltiple***x***ing
+# SMUX
 [![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10]
 
 <img src="mux.jpg" alt="smux" height="100px" /> 
@@ -16,7 +16,7 @@
 
 ## Introduction
 
-Smux (Simple Multiplexing) is a multiplexing library for Golang. It relies on an underlying connection to provide reliability and ordering, such as TCP or KCP, and provides stream-oriented multiplexing.
+Smux (***S***imple ***MU***ltiple***X***ing) is a multiplexing library for Golang. It relies on an underlying connection to provide reliability and ordering, such as TCP or [KCP](https://github.com/xtaci/kcp-go, and provides stream-oriented multiplexing.
 
 ## Features
 
@@ -30,11 +30,15 @@ Smux (Simple Multiplexing) is a multiplexing library for Golang. It relies on an
 For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
 
 ## Specification
+
 ```
 VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)  
 ```
 
 ## Usage
+
+The API of smux are mostly taken from [yamux](https://github.com/hashicorp/yamux)
+
 ```go
 
 func client() {
@@ -87,4 +91,5 @@ func server() {
 ```
 
 ## Status
+
 Alpha
