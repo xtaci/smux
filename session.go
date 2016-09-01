@@ -130,7 +130,7 @@ func (s *Session) NumStreams() int {
 	return len(s.streams)
 }
 
-// notify the session that a session has closed
+// notify the session that a stream has closed
 func (s *Session) streamClosed(sid uint32) {
 	select {
 	case s.chClosedStream <- sid:
