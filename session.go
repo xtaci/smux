@@ -201,10 +201,10 @@ func (s *Session) recvLoop() {
 	for {
 		select {
 		case <-s.tbf:
+			s.tbf <- struct{}{}
 			if f, err := s.readFrame(buffer); err == nil {
 				switch f.cmd {
 				case cmdNOP:
-					s.tbf <- struct{}{}
 				case cmdTerminate:
 					s.Close()
 					return
@@ -217,7 +217,6 @@ func (s *Session) recvLoop() {
 						s.sendFrame(newFrame(cmdRST, f.sid))
 					}
 					s.streamLock.Unlock()
-					s.tbf <- struct{}{}
 				case cmdRST:
 					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; ok {
@@ -225,15 +224,14 @@ func (s *Session) recvLoop() {
 					} else { // must do nothing if stream is absent
 					}
 					s.streamLock.Unlock()
-					s.tbf <- struct{}{}
 				case cmdPSH:
 					s.streamLock.Lock()
 					if stream, ok := s.streams[f.sid]; ok {
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						stream.notifyReadEvent()
+						<-s.tbf // remove a token
 					} else { // stream is absent
 						s.sendFrame(newFrame(cmdRST, f.sid))
-						s.tbf <- struct{}{}
 					}
 					s.streamLock.Unlock()
 				default:
