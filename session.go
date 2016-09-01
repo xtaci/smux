@@ -26,7 +26,7 @@ type Session struct {
 	config       *Config
 	nextStreamID uint32 // next stream identifier
 
-	tbf         chan struct{}      // tokenbuffer
+	tbf         chan struct{}      // token bucket
 	frameQueues map[uint32][]Frame // stream input frame queue
 	streams     map[uint32]*Stream // all streams in this session
 	streamLock  sync.Mutex         // locks streams && frameQueues
@@ -186,7 +186,7 @@ func (s *Session) monitor() {
 			ntokens := len(s.frameQueues[sid])
 			delete(s.frameQueues, sid)
 			s.streamLock.Unlock()
-			for i := 0; i < ntokens; i++ { // return remaining tokens to the pool
+			for i := 0; i < ntokens; i++ { // return remaining tokens to the bucket
 				s.tbf <- struct{}{}
 			}
 		case <-s.die:
