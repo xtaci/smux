@@ -103,7 +103,7 @@ func (s *Stream) Close() error {
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
-		s.sess.streamActiveClose(s.id)
+		s.sess.streamClosed(s.id)
 		s.sess.sendFrame(newFrame(cmdRST, s.id))
 	}
 	return nil

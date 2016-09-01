@@ -102,12 +102,12 @@ func (s *Session) Close() error {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
-		close(s.die)
 		for k := range s.streams {
 			s.streams[k].Close()
 		}
 		s.sendFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
+		close(s.die)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (s *Session) NumStreams() int {
 }
 
 // notify the session that a session has closed
-func (s *Session) streamActiveClose(sid uint32) {
+func (s *Session) streamClosed(sid uint32) {
 	s.chActiveClose <- sid
 }
 
