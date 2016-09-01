@@ -24,13 +24,12 @@ type Session struct {
 	conn io.ReadWriteCloser
 
 	config       *Config
-	nextStreamID uint32                   // next stream identifier
-	streams      map[uint32]*Stream       // all streams in this session
-	rdEvents     map[uint32]chan struct{} // stream read notification
+	nextStreamID uint32 // next stream identifier
 
 	tbf         chan struct{}      // tokenbuffer
 	frameQueues map[uint32][]Frame // stream input frame queue
-	streamLock  sync.Mutex         // locks streams/rdEvents/frameQueues
+	streams     map[uint32]*Stream // all streams in this session
+	streamLock  sync.Mutex         // locks streams && frameQueues
 
 	die            chan struct{} // flag session has died
 	dieLock        sync.Mutex
@@ -47,7 +46,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
 	s.frameQueues = make(map[uint32][]Frame)
-	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClosedStream = make(chan uint32, defaultCloseWait)
 	s.tbf = make(chan struct{}, config.MaxFrameTokens)
@@ -72,11 +70,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
-	chNotifyReader := make(chan struct{}, 1)
-	stream := newStream(sid, s.config.MaxFrameSize, chNotifyReader, s)
+	stream := newStream(sid, s.config.MaxFrameSize, s)
 
 	s.streamLock.Lock()
-	s.rdEvents[sid] = chNotifyReader
 	s.streams[sid] = stream
 	s.streamLock.Unlock()
 
@@ -187,7 +183,6 @@ func (s *Session) monitor() {
 		case sid := <-s.chClosedStream:
 			s.streamLock.Lock()
 			delete(s.streams, sid)
-			delete(s.rdEvents, sid)
 			ntokens := len(s.frameQueues[sid])
 			delete(s.frameQueues, sid)
 			s.streamLock.Unlock()
@@ -216,9 +211,7 @@ func (s *Session) recvLoop() {
 				case cmdSYN:
 					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; !ok {
-						chNotifyReader := make(chan struct{}, 1)
-						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
-						s.rdEvents[f.sid] = chNotifyReader
+						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
 						s.chAccepts <- s.streams[f.sid]
 					} else { // stream exists, RST the peer
 						s.sendFrame(newFrame(cmdRST, f.sid))
@@ -235,12 +228,9 @@ func (s *Session) recvLoop() {
 					s.tbf <- struct{}{}
 				case cmdPSH:
 					s.streamLock.Lock()
-					if _, ok := s.streams[f.sid]; ok {
+					if stream, ok := s.streams[f.sid]; ok {
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
-						select {
-						case s.rdEvents[f.sid] <- struct{}{}:
-						default:
-						}
+						stream.notifyReadEvent()
 					} else { // stream is absent
 						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}

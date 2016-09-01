@@ -9,21 +9,21 @@ import (
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
-	id             uint32
-	chNotifyReader chan struct{}
-	sess           *Session
-	frameSize      uint16
-	rlock          sync.Mutex    // read lock
-	buffer         []byte        // temporary store of remaining frame.data
-	die            chan struct{} // flag the stream has closed
-	dieLock        sync.Mutex
+	id          uint32
+	sess        *Session
+	frameSize   uint16
+	rlock       sync.Mutex    // read lock
+	buffer      []byte        // temporary store of remaining frame.data
+	chReadEvent chan struct{} // notify a read event
+	die         chan struct{} // flag the stream has closed
+	dieLock     sync.Mutex
 }
 
 // newStream initiates a Stream struct
-func newStream(id uint32, frameSize uint16, chNotifyReader chan struct{}, sess *Session) *Stream {
+func newStream(id uint32, frameSize uint16, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
-	s.chNotifyReader = chNotifyReader
+	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
@@ -58,7 +58,7 @@ READ:
 
 	s.rlock.Unlock()
 	select {
-	case <-s.chNotifyReader:
+	case <-s.chReadEvent:
 		goto READ
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
@@ -119,4 +119,12 @@ func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 		frames = append(frames, frame)
 	}
 	return frames
+}
+
+// notify read event
+func (s *Stream) notifyReadEvent() {
+	select {
+	case s.chReadEvent <- struct{}{}:
+	default:
+	}
 }
