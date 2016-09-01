@@ -1,6 +1,18 @@
 package smux
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
+
+type buffer struct {
+	bytes.Buffer
+}
+
+func (b *buffer) Close() error {
+	b.Buffer.Reset()
+	return nil
+}
 
 func TestConfig(t *testing.T) {
 	VerifyConfig(DefaultConfig())
@@ -36,5 +48,14 @@ func TestConfig(t *testing.T) {
 	t.Log(err)
 	if err == nil {
 		t.Fatal(err)
+	}
+
+	var bts buffer
+	if _, err := Server(&bts, config); err == nil {
+		t.Fatal("server started with wrong config")
+	}
+
+	if _, err := Client(&bts, config); err == nil {
+		t.Fatal("client started with wrong config")
 	}
 }

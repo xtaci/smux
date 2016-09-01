@@ -301,21 +301,47 @@ func TestSendWithoutRecv(t *testing.T) {
 	if _, err := stream.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	session.Close()
+	stream.Close()
+}
+
+func TestWriteAfterClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	stream.Close()
+	if _, err := stream.Write([]byte("write after close")); err == nil {
+		t.Fatal("write after close failed")
+	}
 }
 
 func TestRandomFrame(t *testing.T) {
-	// double syn
+	// pure random
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
 		t.Fatal(err)
 	}
 	session, _ := Client(cli, nil)
 	for i := 0; i < 100; i++ {
+		rnd := make([]byte, rand.Uint32()%1024)
+		io.ReadFull(crand.Reader, rnd)
+		session.conn.Write(rnd)
+	}
+	cli.Close()
+
+	// double syn
+	cli, err = net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
 		f := newFrame(cmdSYN, 1000)
 		session.sendFrame(f)
 	}
-	session.Close()
+	cli.Close()
 
 	// random cmds
 	cli, err = net.Dial("tcp", "127.0.0.1:19999")
@@ -328,8 +354,9 @@ func TestRandomFrame(t *testing.T) {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		session.sendFrame(f)
 	}
-	session.Close()
+	cli.Close()
 
+	// random cmds & sids
 	cli, err = net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
 		t.Fatal(err)
@@ -339,8 +366,9 @@ func TestRandomFrame(t *testing.T) {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		session.sendFrame(f)
 	}
-	session.Close()
+	cli.Close()
 
+	// random version
 	cli, err = net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
 		t.Fatal(err)
@@ -351,24 +379,23 @@ func TestRandomFrame(t *testing.T) {
 		f.ver = byte(rand.Uint32())
 		session.sendFrame(f)
 	}
-	session.Close()
+	cli.Close()
 
+	// incorrect size
 	cli, err = net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
 		t.Fatal(err)
 	}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
-		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		f.ver = byte(rand.Uint32())
-		bts, _ := f.MarshalBinary()
-		rnd := make([]byte, rand.Uint32()%1024)
-		io.ReadFull(crand.Reader, rnd)
-		bts = append(bts, rnd...)
-		binary.LittleEndian.PutUint16(bts[2:], uint16(rand.Uint32()))
-		session.conn.Write(bts)
-	}
-	session.Close()
+	f := newFrame(byte(rand.Uint32()), rand.Uint32())
+	f.ver = byte(rand.Uint32())
+	bts, _ := f.MarshalBinary()
+	rnd := make([]byte, rand.Uint32()%1024)
+	io.ReadFull(crand.Reader, rnd)
+	bts = append(bts, rnd...)
+	binary.LittleEndian.PutUint16(bts[2:], uint16(len(rnd)+1)) /// incorrect size
+	session.conn.Write(bts)
+	cli.Close()
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
