@@ -222,7 +222,8 @@ func (s *Session) recvLoop() {
 						case s.rdEvents[f.sid] <- struct{}{}:
 						default:
 						}
-					} else {
+					} else { // stream absent
+						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}
 					}
 				}
