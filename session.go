@@ -21,24 +21,20 @@ const (
 
 // Session defines a multiplexed connection for streams
 type Session struct {
-	// connection related
 	conn io.ReadWriteCloser
 
-	// stream related
-	nextStreamID uint32
-	streams      map[uint32]*Stream
-	frameSize    uint16
-	rdEvents     map[uint32]chan struct{}
+	nextStreamID uint32                   // next stream identifier
+	streams      map[uint32]*Stream       // all streams in this session
+	frameSize    uint16                   // max frame size
+	rdEvents     map[uint32]chan struct{} // stream read notification
 
-	// token controlled read buffer
-	tbf         chan struct{}
-	streamLines map[uint32][]Frame
+	tbf         chan struct{}      // tokenbuffer
+	frameQueues map[uint32][]Frame // stream input frame queue
 
-	//
-	die       chan struct{}
+	die       chan struct{} // flag session has died
 	chAccepts chan *Stream
 	chClose   chan uint32
-	dataReady int32
+	dataReady int32 // flag data has arrived
 	mu        sync.Mutex
 }
 
@@ -48,7 +44,7 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 	s.frameSize = framesize
 	s.streams = make(map[uint32]*Stream)
 	s.tbf = make(chan struct{}, maxframes)
-	s.streamLines = make(map[uint32][]Frame)
+	s.frameQueues = make(map[uint32][]Frame)
 	s.rdEvents = make(map[uint32]chan struct{})
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClose = make(chan uint32, defaultCloseWait)
@@ -69,7 +65,6 @@ func newSession(conn io.ReadWriteCloser, client bool, maxframes int, framesize u
 
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
-	// track stream
 	s.mu.Lock()
 	sid := s.nextStreamID
 	s.nextStreamID += 2
@@ -119,6 +114,7 @@ func (s *Session) NumStreams() int {
 	return len(s.streams)
 }
 
+// notify the session that a session has closed
 func (s *Session) streamClose(sid uint32) {
 	s.chClose <- sid
 }
@@ -126,10 +122,10 @@ func (s *Session) streamClose(sid uint32) {
 // nonblocking read from session pool, for streams
 func (s *Session) nioread(sid uint32) *Frame {
 	s.mu.Lock()
-	frames := s.streamLines[sid]
+	frames := s.frameQueues[sid]
 	if len(frames) > 0 {
 		f := frames[0]
-		s.streamLines[sid] = frames[1:]
+		s.frameQueues[sid] = frames[1:]
 		s.tbf <- struct{}{}
 		s.mu.Unlock()
 		return &f
@@ -168,10 +164,10 @@ func (s *Session) monitor() {
 			s.mu.Lock()
 			delete(s.streams, sid)
 			delete(s.rdEvents, sid)
-			ntokens := len(s.streamLines[sid])
-			delete(s.streamLines, sid)
+			ntokens := len(s.frameQueues[sid])
+			delete(s.frameQueues, sid)
 			s.mu.Unlock()
-			for i := 0; i < ntokens; i++ { // return stream tokens to the pool
+			for i := 0; i < ntokens; i++ { // return remaining tokens to the pool
 				s.tbf <- struct{}{}
 			}
 		case <-s.die:
@@ -202,7 +198,7 @@ func (s *Session) recvLoop() {
 					s.tbf <- struct{}{}
 				default:
 					if _, ok := s.streams[f.sid]; ok {
-						s.streamLines[f.sid] = append(s.streamLines[f.sid], f)
+						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						select {
 						case s.rdEvents[f.sid] <- struct{}{}:
 						default:
