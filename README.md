@@ -14,10 +14,77 @@
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
 
+## Introduction
+
+Smux (Simple Multiplexing) is a multiplexing library for Golang. It relies on an underlying connection to provide reliability and ordering, such as TCP or KCP, and provides stream-oriented multiplexing.
+
 ## Features
-1. Token controlled receive buffer.
-1. Receive buffer is own by session and is shared across streams.
-1. Minimized header, mobile friendly design.
+
+1. Tiny, less than 500 LOC.
+2. Token controlled receive buffer, which provides smooth bandwidth usage curve.
+3. Receive buffer is own by session and is shared across streams.
+4. Minimized header(8Bytes), maxmized payload. 
+
+## Documentation
+
+For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
+
+## Specification
+```
+VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)  
+```
+
+## Usage
+```go
+
+func client() {
+    // Get a TCP connection
+    conn, err := net.Dial(...)
+    if err != nil {
+        panic(err)
+    }
+
+    // Setup client side of smux
+    session, err := smux.Client(conn, nil)
+    if err != nil {
+        panic(err)
+    }
+
+    // Open a new stream
+    stream, err := session.OpenStream()
+    if err != nil {
+        panic(err)
+    }
+
+    // Stream implements net.Conn
+    stream.Write([]byte("ping"))
+}
+
+func server() {
+    // Accept a TCP connection
+    conn, err := listener.Accept()
+    if err != nil {
+        panic(err)
+    }
+
+    // Setup server side of smux
+    session, err := smux.Server(conn, nil)
+    if err != nil {
+        panic(err)
+    }
+
+    // Accept a stream
+    stream, err := session.AcceptStream()
+    if err != nil {
+        panic(err)
+    }
+
+    // Listen for a message
+    buf := make([]byte, 4)
+    stream.Read(buf)
+}
+
+```
 
 ## Status
 Alpha
