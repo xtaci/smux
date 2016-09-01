@@ -132,10 +132,12 @@ func (s *Session) NumStreams() int {
 
 // notify the session that a stream has closed
 func (s *Session) streamClosed(sid uint32) {
-	select {
-	case s.chClosedStream <- sid:
-	case <-s.die:
-	}
+	go func() {
+		select {
+		case s.chClosedStream <- sid:
+		case <-s.die:
+		}
+	}()
 }
 
 // nonblocking read from session pool, for streams
@@ -202,7 +204,6 @@ func (s *Session) recvLoop() {
 		select {
 		case <-s.tbf:
 			if f, err := s.readFrame(buffer); err == nil {
-				s.mu.Lock()
 				switch f.cmd {
 				case cmdNOP:
 					s.tbf <- struct{}{}
@@ -210,6 +211,7 @@ func (s *Session) recvLoop() {
 					s.Close()
 					return
 				case cmdSYN:
+					s.mu.Lock()
 					if _, ok := s.streams[f.sid]; !ok {
 						chNotifyReader := make(chan struct{}, 1)
 						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, chNotifyReader, s)
@@ -218,14 +220,18 @@ func (s *Session) recvLoop() {
 					} else { // stream exists, RST the peer
 						s.sendFrame(newFrame(cmdRST, f.sid))
 					}
+					s.mu.Unlock()
 					s.tbf <- struct{}{}
 				case cmdRST:
+					s.mu.Lock()
 					if _, ok := s.streams[f.sid]; ok {
 						s.streams[f.sid].Close()
 					} else { // must do nothing if stream is absent
 					}
+					s.mu.Unlock()
 					s.tbf <- struct{}{}
 				case cmdPSH:
+					s.mu.Lock()
 					if _, ok := s.streams[f.sid]; ok {
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						select {
@@ -236,10 +242,10 @@ func (s *Session) recvLoop() {
 						s.sendFrame(newFrame(cmdRST, f.sid))
 						s.tbf <- struct{}{}
 					}
+					s.mu.Unlock()
 				default:
 					s.sendFrame(newFrame(cmdRST, f.sid))
 				}
-				s.mu.Unlock()
 				atomic.StoreInt32(&s.dataReady, 1)
 			} else {
 				s.Close()

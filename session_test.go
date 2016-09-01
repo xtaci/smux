@@ -139,3 +139,18 @@ func TestParallel(t *testing.T) {
 	wg.Wait()
 	session.Close()
 }
+
+func BenchmarkAcceptClose(b *testing.B) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		b.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	for i := 0; i < b.N; i++ {
+		if stream, err := session.OpenStream(); err == nil {
+			stream.Close()
+		} else {
+			b.Fatal(err)
+		}
+	}
+}
