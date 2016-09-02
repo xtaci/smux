@@ -10,7 +10,7 @@ import (
 type Stream struct {
 	id          uint32
 	sess        *Session
-	frameSize   uint16
+	frameSize   int
 	rlock       sync.Mutex    // read lock
 	buffer      []byte        // temporary store of remaining frame.data
 	chReadEvent chan struct{} // notify a read event
@@ -19,7 +19,7 @@ type Stream struct {
 }
 
 // newStream initiates a Stream struct
-func newStream(id uint32, frameSize uint16, sess *Session) *Stream {
+func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.chReadEvent = make(chan struct{}, 1)

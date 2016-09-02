@@ -18,7 +18,7 @@ type Config struct {
 
 	// MaxFrameSize is used to control the maximum
 	// frame size to sent to the remote
-	MaxFrameSize uint16
+	MaxFrameSize int
 
 	// MaxFrameTokens is used to control the maximum
 	// number of frame in the buffer pool
@@ -30,8 +30,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		KeepAliveInterval: 10 * time.Second,
 		KeepAliveTimeout:  30 * time.Second,
-		MaxFrameSize:      4096,
-		MaxFrameTokens:    4096,
+		MaxFrameSize:      2048,
+		MaxFrameTokens:    2048,
 	}
 }
 
@@ -43,8 +43,11 @@ func VerifyConfig(config *Config) error {
 	if config.KeepAliveTimeout < config.KeepAliveInterval {
 		return fmt.Errorf("keep-alive timeout must be larger than keep-alive interval")
 	}
-	if config.MaxFrameSize == 0 {
+	if config.MaxFrameSize <= 0 {
 		return errors.New("max frame size must be positive")
+	}
+	if config.MaxFrameSize > 65535 {
+		return errors.New("max frame size must not be larger than 65535")
 	}
 	if config.MaxFrameTokens <= 0 {
 		return errors.New("max frame tokens must be positive")
