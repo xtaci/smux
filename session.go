@@ -27,8 +27,9 @@ type Session struct {
 	config       *Config
 	nextStreamID uint32 // next stream identifier
 
-	bucket      int32
-	tbfCond     *sync.Cond
+	bucket     int32
+	bucketCond *sync.Cond
+
 	frameQueues map[uint32][]Frame // stream input frame queue
 	streams     map[uint32]*Stream // all streams in this session
 	streamLock  sync.Mutex         // locks streams && frameQueues
@@ -51,7 +52,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClosedStream = make(chan uint32, defaultCloseWait)
 	s.bucket = int32(config.MaxReceiveBuffer)
-	s.tbfCond = sync.NewCond(&sync.Mutex{})
+	s.bucketCond = sync.NewCond(&sync.Mutex{})
 	if client {
 		s.nextStreamID = 1
 	} else {
@@ -108,7 +109,7 @@ func (s *Session) Close() error {
 		s.writeFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
 		close(s.die)
-		s.tbfCond.Signal()
+		s.bucketCond.Signal()
 	}
 	return nil
 }
@@ -152,7 +153,7 @@ func (s *Session) nioread(sid uint32) *Frame {
 		s.frameQueues[sid] = frames[1:]
 		atomic.AddInt32(&s.bucket, int32(len(f.data)))
 		s.streamLock.Unlock()
-		s.tbfCond.Signal()
+		s.bucketCond.Signal()
 		return &f
 	}
 	s.streamLock.Unlock()
@@ -192,7 +193,7 @@ func (s *Session) monitor() {
 			for k := range fq { // return remaining tokens to the bucket
 				atomic.AddInt32(&s.bucket, int32(len(fq[k].data)))
 			}
-			s.tbfCond.Signal()
+			s.bucketCond.Signal()
 			delete(s.frameQueues, sid)
 			s.streamLock.Unlock()
 		case <-s.die:
@@ -205,11 +206,11 @@ func (s *Session) monitor() {
 func (s *Session) recvLoop() {
 	buffer := make([]byte, (1<<16)+headerSize)
 	for {
-		s.tbfCond.L.Lock()
+		s.bucketCond.L.Lock()
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
-			s.tbfCond.Wait()
+			s.bucketCond.Wait()
 		}
-		s.tbfCond.L.Unlock()
+		s.bucketCond.L.Unlock()
 
 		if s.IsClosed() {
 			return
@@ -248,7 +249,7 @@ func (s *Session) recvLoop() {
 				rstflag := false
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
-					atomic.AddInt32(&s.bucket, -int32(len(f.data)-1))
+					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 					stream.notifyReadEvent()
 				} else { // stream is absent
