@@ -282,3 +282,11 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	s.writeLock.Unlock()
 	return len(f.data), err
 }
+
+// writeBinary writes the byte slice to the underlying connection
+func (s *Session) writeBinary(bts []byte) (n int, err error) {
+	s.writeLock.Lock()
+	n, err = s.conn.Write(bts)
+	s.writeLock.Unlock()
+	return n, err
+}
