@@ -279,7 +279,8 @@ func (s *Session) keepalive() {
 		case <-tickerPing.C:
 			s.writeFrame(newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
+			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) &&
+				int(atomic.LoadInt32(&s.bucket)) == s.config.MaxReceiveBuffer {
 				s.Close()
 				return
 			}

@@ -51,7 +51,7 @@ func VerifyConfig(config *Config) error {
 		return errors.New("max frame size must not be larger than 65535")
 	}
 	if config.MaxReceiveBuffer <= 0 {
-		return errors.New("max frame tokens must be positive")
+		return errors.New("max receive buffer must be positive")
 	}
 	return nil
 }
