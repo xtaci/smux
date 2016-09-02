@@ -10,10 +10,11 @@ import (
 
 // Config is used to tune the Smux session
 type Config struct {
-	// KeepAliveInterval is how often to perform the keep alive
+	// KeepAliveInterval is how often to send a NOP command to the remote
 	KeepAliveInterval time.Duration
 
-	// KeepAliveExpire is how long the session will be Closed if no data has arrived
+	// KeepAliveTimeout is how long the session
+	// will be closed if no data has arrived
 	KeepAliveTimeout time.Duration
 
 	// MaxFrameSize is used to control the maximum
