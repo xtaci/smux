@@ -259,7 +259,7 @@ func (s *Session) keepalive() {
 		case <-tickerPing.C:
 			s.sendFrame(newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
+			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) && len(s.tbf) == s.config.MaxFrameTokens {
 				s.Close()
 				return
 			}

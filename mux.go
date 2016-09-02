@@ -29,7 +29,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  20 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
 		MaxFrameSize:      4096,
 		MaxFrameTokens:    4096,
 	}
