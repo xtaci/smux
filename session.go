@@ -27,7 +27,8 @@ type Session struct {
 	config       *Config
 	nextStreamID uint32 // next stream identifier
 
-	tbf         chan struct{}      // token bucket
+	bucket      int32
+	tbfCond     *sync.Cond
 	frameQueues map[uint32][]Frame // stream input frame queue
 	streams     map[uint32]*Stream // all streams in this session
 	streamLock  sync.Mutex         // locks streams && frameQueues
@@ -49,10 +50,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.frameQueues = make(map[uint32][]Frame)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClosedStream = make(chan uint32, defaultCloseWait)
-	s.tbf = make(chan struct{}, config.MaxFrameTokens)
-	for i := 0; i < config.MaxFrameTokens; i++ {
-		s.tbf <- struct{}{}
-	}
+	s.bucket = int32(config.MaxReceiveBuffer)
+	s.tbfCond = sync.NewCond(&sync.Mutex{})
 	if client {
 		s.nextStreamID = 1
 	} else {
@@ -109,6 +108,7 @@ func (s *Session) Close() error {
 		s.writeFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
 		close(s.die)
+		s.tbfCond.Signal()
 	}
 	return nil
 }
@@ -150,8 +150,9 @@ func (s *Session) nioread(sid uint32) *Frame {
 	if len(frames) > 0 {
 		f := frames[0]
 		s.frameQueues[sid] = frames[1:]
-		s.tbf <- struct{}{}
+		atomic.AddInt32(&s.bucket, int32(len(f.data)))
 		s.streamLock.Unlock()
+		s.tbfCond.Signal()
 		return &f
 	}
 	s.streamLock.Unlock()
@@ -187,12 +188,13 @@ func (s *Session) monitor() {
 		case sid := <-s.chClosedStream:
 			s.streamLock.Lock()
 			delete(s.streams, sid)
-			ntokens := len(s.frameQueues[sid])
+			fq := s.frameQueues[sid]
+			for k := range fq { // return remaining tokens to the bucket
+				atomic.AddInt32(&s.bucket, int32(len(fq[k].data)))
+			}
+			s.tbfCond.Signal()
 			delete(s.frameQueues, sid)
 			s.streamLock.Unlock()
-			for i := 0; i < ntokens; i++ { // return remaining tokens to the bucket
-				s.tbf <- struct{}{}
-			}
 		case <-s.die:
 			return
 		}
@@ -203,61 +205,65 @@ func (s *Session) monitor() {
 func (s *Session) recvLoop() {
 	buffer := make([]byte, (1<<16)+headerSize)
 	for {
-		select {
-		case <-s.tbf:
-			s.tbf <- struct{}{}
-			if f, err := s.readFrame(buffer); err == nil {
-				atomic.StoreInt32(&s.dataReady, 1)
+		s.tbfCond.L.Lock()
+		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
+			s.tbfCond.Wait()
+		}
+		s.tbfCond.L.Unlock()
 
-				switch f.cmd {
-				case cmdNOP:
-				case cmdTerminate:
-					s.Close()
-					return
-				case cmdSYN:
-					rstflag := false
-					s.streamLock.Lock()
-					if _, ok := s.streams[f.sid]; !ok {
-						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
-						s.chAccepts <- s.streams[f.sid]
-					} else { // stream exists, RST the peer
-						rstflag = true
-					}
-					s.streamLock.Unlock()
+		if s.IsClosed() {
+			return
+		}
 
-					if rstflag {
-						s.writeFrame(newFrame(cmdRST, f.sid))
-					}
-				case cmdRST:
-					s.streamLock.Lock()
-					if _, ok := s.streams[f.sid]; ok {
-						s.streams[f.sid].Close()
-					} else { // must do nothing if stream is absent
-					}
-					s.streamLock.Unlock()
-				case cmdPSH:
-					rstflag := false
-					s.streamLock.Lock()
-					if stream, ok := s.streams[f.sid]; ok {
-						<-s.tbf // remove a token
-						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
-						stream.notifyReadEvent()
-					} else { // stream is absent
-						rstflag = true
-					}
-					s.streamLock.Unlock()
-					if rstflag {
-						s.writeFrame(newFrame(cmdRST, f.sid))
-					}
-				default:
-					s.Close()
-					return
+		if f, err := s.readFrame(buffer); err == nil {
+			atomic.StoreInt32(&s.dataReady, 1)
+
+			switch f.cmd {
+			case cmdNOP:
+			case cmdTerminate:
+				s.Close()
+				return
+			case cmdSYN:
+				rstflag := false
+				s.streamLock.Lock()
+				if _, ok := s.streams[f.sid]; !ok {
+					s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
+					s.chAccepts <- s.streams[f.sid]
+				} else { // stream exists, RST the peer
+					rstflag = true
 				}
-			} else {
+				s.streamLock.Unlock()
+
+				if rstflag {
+					s.writeFrame(newFrame(cmdRST, f.sid))
+				}
+			case cmdRST:
+				s.streamLock.Lock()
+				if _, ok := s.streams[f.sid]; ok {
+					s.streams[f.sid].Close()
+				} else { // must do nothing if stream is absent
+				}
+				s.streamLock.Unlock()
+			case cmdPSH:
+				rstflag := false
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					atomic.AddInt32(&s.bucket, -int32(len(f.data)-1))
+					s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
+					stream.notifyReadEvent()
+				} else { // stream is absent
+					rstflag = true
+				}
+				s.streamLock.Unlock()
+				if rstflag {
+					s.writeFrame(newFrame(cmdRST, f.sid))
+				}
+			default:
 				s.Close()
 				return
 			}
-		case <-s.die:
+		} else {
+			s.Close()
 			return
 		}
 	}
@@ -273,7 +279,7 @@ func (s *Session) keepalive() {
 		case <-tickerPing.C:
 			s.writeFrame(newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) && len(s.tbf) == s.config.MaxFrameTokens {
+			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
 				return
 			}
