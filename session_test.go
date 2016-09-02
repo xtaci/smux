@@ -317,6 +317,26 @@ func TestWriteAfterClose(t *testing.T) {
 	}
 }
 
+func TestNumStreamAfterClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	if _, err := session.OpenStream(); err == nil {
+		if session.NumStreams() != 1 {
+			t.Fatal("wrong number of streams after opened")
+		}
+		session.Close()
+		if session.NumStreams() != 0 {
+			t.Fatal("wrong number of streams after session closed")
+		}
+	} else {
+		t.Fatal(err)
+	}
+	cli.Close()
+}
+
 func TestRandomFrame(t *testing.T) {
 	// pure random
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
