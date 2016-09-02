@@ -21,7 +21,7 @@ type Config struct {
 	// frame size to sent to the remote
 	MaxFrameSize int
 
-	// MaxFrameTokens is used to control the maximum
+	// MaxReceiveBuffer is used to control the maximum
 	// number of data in the buffer pool
 	MaxReceiveBuffer int
 }
