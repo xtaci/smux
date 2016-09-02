@@ -21,7 +21,8 @@ const (
 
 // Session defines a multiplexed connection for streams
 type Session struct {
-	conn io.ReadWriteCloser
+	conn     io.ReadWriteCloser
+	sendLock sync.Mutex
 
 	config       *Config
 	nextStreamID uint32 // next stream identifier
@@ -76,7 +77,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streams[sid] = stream
 	s.streamLock.Unlock()
 
-	s.sendFrame(newFrame(cmdSYN, sid))
+	s.writeFrame(newFrame(cmdSYN, sid))
 	return stream, nil
 }
 
@@ -105,7 +106,7 @@ func (s *Session) Close() error {
 			s.streams[k].Close()
 		}
 		s.streamLock.Unlock()
-		s.sendFrame(newFrame(cmdTerminate, 0))
+		s.writeFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
 		close(s.die)
 	}
@@ -203,6 +204,8 @@ func (s *Session) recvLoop() {
 		case <-s.tbf:
 			s.tbf <- struct{}{}
 			if f, err := s.readFrame(buffer); err == nil {
+				atomic.StoreInt32(&s.dataReady, 1)
+
 				switch f.cmd {
 				case cmdNOP:
 				case cmdTerminate:
@@ -214,7 +217,7 @@ func (s *Session) recvLoop() {
 						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
 						s.chAccepts <- s.streams[f.sid]
 					} else { // stream exists, RST the peer
-						s.sendFrame(newFrame(cmdRST, f.sid))
+						s.writeFrame(newFrame(cmdRST, f.sid))
 					}
 					s.streamLock.Unlock()
 				case cmdRST:
@@ -231,14 +234,13 @@ func (s *Session) recvLoop() {
 						stream.notifyReadEvent()
 						<-s.tbf // remove a token
 					} else { // stream is absent
-						s.sendFrame(newFrame(cmdRST, f.sid))
+						s.writeFrame(newFrame(cmdRST, f.sid))
 					}
 					s.streamLock.Unlock()
 				default:
 					s.Close()
 					return
 				}
-				atomic.StoreInt32(&s.dataReady, 1)
 			} else {
 				s.Close()
 				return
@@ -257,7 +259,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.sendFrame(newFrame(cmdNOP, 0))
+			s.writeFrame(newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) && len(s.tbf) == s.config.MaxFrameTokens {
 				s.Close()
@@ -269,7 +271,11 @@ func (s *Session) keepalive() {
 	}
 }
 
-func (s *Session) sendFrame(f Frame) {
+// writeFrame writes the frame to the underlying connection, and returns len(f.data) if successful
+func (s *Session) writeFrame(f Frame) (n int, err error) {
 	bts, _ := f.MarshalBinary()
-	s.conn.Write(bts)
+	s.sendLock.Lock()
+	_, err = s.conn.Write(bts)
+	s.sendLock.Unlock()
+	return len(f.data), err
 }

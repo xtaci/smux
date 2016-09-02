@@ -1,7 +1,6 @@
 package smux
 
 import (
-	"bytes"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -75,16 +74,15 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
-	var combined bytes.Buffer
+	sum := 0
 	for k := range frames {
-		bts, _ := frames[k].MarshalBinary()
-		combined.Write(bts)
+		fn, ferr := s.sess.writeFrame(frames[k])
+		sum += fn
+		if ferr != nil {
+			return sum, ferr
+		}
 	}
-
-	if _, err = s.sess.conn.Write(combined.Bytes()); err != nil {
-		return 0, err
-	}
-	return len(b), nil
+	return sum, nil
 }
 
 // Close implements io.ReadWriteCloser
@@ -98,7 +96,7 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.sess.streamClosed(s.id)
-		s.sess.sendFrame(newFrame(cmdRST, s.id))
+		s.sess.writeFrame(newFrame(cmdRST, s.id))
 	}
 	return nil
 }

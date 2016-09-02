@@ -224,8 +224,8 @@ func TestKeepAliveTimeout(t *testing.T) {
 	}
 
 	config := DefaultConfig()
-	config.KeepAliveInterval = 1
-	config.KeepAliveTimeout = 2
+	config.KeepAliveInterval = time.Second
+	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(cli, config)
 	<-time.After(3 * time.Second)
 	if session.IsClosed() != true {
@@ -339,7 +339,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(cmdSYN, 1000)
-		session.sendFrame(f)
+		session.writeFrame(f)
 	}
 	cli.Close()
 
@@ -352,7 +352,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		session.sendFrame(f)
+		session.writeFrame(f)
 	}
 	cli.Close()
 
@@ -364,7 +364,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		session.sendFrame(f)
+		session.writeFrame(f)
 	}
 	cli.Close()
 
@@ -377,7 +377,7 @@ func TestRandomFrame(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		f.ver = byte(rand.Uint32())
-		session.sendFrame(f)
+		session.writeFrame(f)
 	}
 	cli.Close()
 
