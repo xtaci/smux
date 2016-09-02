@@ -215,14 +215,19 @@ func (s *Session) recvLoop() {
 					s.Close()
 					return
 				case cmdSYN:
+					rstflag := false
 					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; !ok {
 						s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
 						s.chAccepts <- s.streams[f.sid]
 					} else { // stream exists, RST the peer
-						s.writeFrame(newFrame(cmdRST, f.sid))
+						rstflag = true
 					}
 					s.streamLock.Unlock()
+
+					if rstflag {
+						s.writeFrame(newFrame(cmdRST, f.sid))
+					}
 				case cmdRST:
 					s.streamLock.Lock()
 					if _, ok := s.streams[f.sid]; ok {
@@ -231,15 +236,19 @@ func (s *Session) recvLoop() {
 					}
 					s.streamLock.Unlock()
 				case cmdPSH:
+					rstflag := false
 					s.streamLock.Lock()
 					if stream, ok := s.streams[f.sid]; ok {
+						<-s.tbf // remove a token
 						s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 						stream.notifyReadEvent()
-						<-s.tbf // remove a token
 					} else { // stream is absent
-						s.writeFrame(newFrame(cmdRST, f.sid))
+						rstflag = true
 					}
 					s.streamLock.Unlock()
+					if rstflag {
+						s.writeFrame(newFrame(cmdRST, f.sid))
+					}
 				default:
 					s.Close()
 					return
