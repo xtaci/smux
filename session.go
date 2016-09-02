@@ -21,8 +21,8 @@ const (
 
 // Session defines a multiplexed connection for streams
 type Session struct {
-	conn     io.ReadWriteCloser
-	sendLock sync.Mutex
+	conn      io.ReadWriteCloser
+	writeLock sync.Mutex
 
 	config       *Config
 	nextStreamID uint32 // next stream identifier
@@ -274,8 +274,8 @@ func (s *Session) keepalive() {
 // writeFrame writes the frame to the underlying connection, and returns len(f.data) if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
 	bts, _ := f.MarshalBinary()
-	s.sendLock.Lock()
+	s.writeLock.Lock()
 	_, err = s.conn.Write(bts)
-	s.sendLock.Unlock()
+	s.writeLock.Unlock()
 	return len(f.data), err
 }
