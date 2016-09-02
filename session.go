@@ -125,6 +125,9 @@ func (s *Session) IsClosed() bool {
 
 // NumStreams returns the number of currently open streams
 func (s *Session) NumStreams() int {
+	if s.IsClosed() {
+		return 0
+	}
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	return len(s.streams)
