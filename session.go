@@ -281,13 +281,14 @@ func (s *Session) keepalive() {
 	}
 }
 
-// writeFrame writes the frame to the underlying connection, and returns len(f.data) if successful
+// writeFrame writes the frame to the underlying connection
+// and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
 	bts, _ := f.MarshalBinary()
 	s.writeLock.Lock()
-	_, err = s.conn.Write(bts)
+	n, err = s.conn.Write(bts)
 	s.writeLock.Unlock()
-	return len(f.data), err
+	return n, err
 }
 
 // writeBinary writes the byte slice to the underlying connection
