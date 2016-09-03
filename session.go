@@ -235,12 +235,7 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			case cmdRST:
-				s.streamLock.Lock()
-				if stream, ok := s.streams[f.sid]; ok {
-					go stream.Close()
-				} else { // must do nothing if stream is absent
-				}
-				s.streamLock.Unlock()
+				fallthrough
 			case cmdPSH:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {

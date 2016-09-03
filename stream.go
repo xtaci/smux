@@ -47,11 +47,18 @@ READ:
 		return n, nil
 	}
 
-	if f := s.sess.nioread(s.id); f != nil && f.cmd == cmdPSH {
-		n = copy(b, f.data)
-		s.buffer = f.data[n:]
-		s.rlock.Unlock()
-		return n, nil
+	if f := s.sess.nioread(s.id); f != nil {
+		switch f.cmd {
+		case cmdPSH:
+			n = copy(b, f.data)
+			s.buffer = f.data[n:]
+			s.rlock.Unlock()
+			return
+		case cmdRST:
+			s.Close()
+			s.rlock.Unlock()
+			return 0, errors.New(errBrokenPipe)
+		}
 	}
 
 	s.rlock.Unlock()
