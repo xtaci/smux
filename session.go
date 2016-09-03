@@ -104,6 +104,11 @@ func (s *Session) Close() error {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
+		s.streamLock.Lock()
+		for k := range s.streams {
+			s.streams[k].sessionClose()
+		}
+		s.streamLock.Unlock()
 		s.conn.Close()
 		close(s.die)
 		s.bucketCond.Signal()
