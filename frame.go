@@ -22,7 +22,7 @@ const (
 	sizeOfCmd    = 1
 	sizeOfLength = 2
 	sizeOfSid    = 4
-	headerSize   = sizeOfVer + sizeOfCmd + sizeOfSid + sizeOfLength
+	headerSize   = 8 //sizeOfVer + sizeOfCmd + sizeOfSid + sizeOfLength
 )
 
 // Frame defines a packet from or to be multiplexed into a single connection
