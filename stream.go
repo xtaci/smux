@@ -3,6 +3,7 @@ package smux
 import (
 	"bytes"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 )
@@ -10,10 +11,9 @@ import (
 // Stream implements io.ReadWriteCloser
 type Stream struct {
 	id          uint32
+	rstflag     int32
 	sess        *Session
 	frameSize   int
-	rlock       sync.Mutex    // read lock
-	buffer      []byte        // temporary store of remaining frame.data
 	chReadEvent chan struct{} // notify a read event
 	die         chan struct{} // flag the stream has closed
 	dieLock     sync.Mutex
@@ -39,29 +39,13 @@ READ:
 	default:
 	}
 
-	s.rlock.Lock()
-	if len(s.buffer) > 0 {
-		n = copy(b, s.buffer)
-		s.buffer = s.buffer[n:]
-		s.rlock.Unlock()
-		return n, nil
+	if n = s.sess.nioread(s.id, b); n > 0 {
+		return n, err
+	} else if atomic.LoadInt32(&s.rstflag) == 1 {
+		s.Close()
+		return 0, errors.New(errBrokenPipe)
 	}
 
-	if f := s.sess.nioread(s.id); f != nil {
-		switch f.cmd {
-		case cmdPSH:
-			n = copy(b, f.data)
-			s.buffer = f.data[n:]
-			s.rlock.Unlock()
-			return
-		case cmdRST:
-			s.Close()
-			s.rlock.Unlock()
-			return 0, errors.New(errBrokenPipe)
-		}
-	}
-
-	s.rlock.Unlock()
 	select {
 	case <-s.chReadEvent:
 		goto READ
@@ -133,4 +117,9 @@ func (s *Stream) notifyReadEvent() {
 	case s.chReadEvent <- struct{}{}:
 	default:
 	}
+}
+
+// mark this stream has benn reset
+func (s *Stream) markRST() {
+	atomic.StoreInt32(&s.rstflag, 1)
 }

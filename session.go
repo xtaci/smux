@@ -30,9 +30,9 @@ type Session struct {
 	bucket     int32
 	bucketCond *sync.Cond
 
-	frameQueues map[uint32][]Frame // stream input frame queue
-	streams     map[uint32]*Stream // all streams in this session
-	streamLock  sync.Mutex         // locks streams && frameQueues
+	streamBuffers map[uint32][]byte  // stream input buffer
+	streams       map[uint32]*Stream // all streams in this session
+	streamLock    sync.Mutex         // locks streams && frameQueues
 
 	die            chan struct{} // flag session has died
 	dieLock        sync.Mutex
@@ -48,7 +48,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.conn = conn
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
-	s.frameQueues = make(map[uint32][]Frame)
+	s.streamBuffers = make(map[uint32][]byte)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClosedStream = make(chan uint32, defaultCloseWait)
 	s.bucket = int32(config.MaxReceiveBuffer)
@@ -145,19 +145,16 @@ func (s *Session) streamClosed(sid uint32) {
 }
 
 // nonblocking read from session pool, for streams
-func (s *Session) nioread(sid uint32) *Frame {
+func (s *Session) nioread(sid uint32, p []byte) (n int) {
 	s.streamLock.Lock()
-	frames := s.frameQueues[sid]
-	if len(frames) > 0 {
-		f := frames[0]
-		s.frameQueues[sid] = frames[1:]
-		atomic.AddInt32(&s.bucket, int32(len(f.data)))
-		s.streamLock.Unlock()
+	n = copy(p, s.streamBuffers[sid])
+	if n > 0 {
+		s.streamBuffers[sid] = s.streamBuffers[sid][n:]
+		atomic.AddInt32(&s.bucket, int32(n))
 		s.bucketCond.Signal()
-		return &f
 	}
 	s.streamLock.Unlock()
-	return nil
+	return
 }
 
 // session read a frame from underlying connection
@@ -189,12 +186,11 @@ func (s *Session) monitor() {
 		case sid := <-s.chClosedStream:
 			s.streamLock.Lock()
 			delete(s.streams, sid)
-			fq := s.frameQueues[sid]
-			for k := range fq { // return remaining tokens to the bucket
-				atomic.AddInt32(&s.bucket, int32(len(fq[k].data)))
+			if n := len(s.streamBuffers[sid]); n > 0 { // return remaining tokens to the bucket
+				atomic.AddInt32(&s.bucket, int32(n))
+				s.bucketCond.Signal()
 			}
-			s.bucketCond.Signal()
-			delete(s.frameQueues, sid)
+			delete(s.streamBuffers, sid)
 			s.streamLock.Unlock()
 		case <-s.die:
 			return
@@ -235,12 +231,17 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			case cmdRST:
-				fallthrough
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					stream.markRST()
+					stream.notifyReadEvent()
+				}
+				s.streamLock.Unlock()
 			case cmdPSH:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
-					s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
+					s.streamBuffers[f.sid] = append(s.streamBuffers[f.sid], f.data...)
 					stream.notifyReadEvent()
 				} else { // stream is absent
 					go s.writeFrame(newFrame(cmdRST, f.sid))
