@@ -10,11 +10,10 @@ const (
 )
 
 const ( // cmds
-	cmdSYN       byte = iota // stream open
-	cmdRST                   // stream close
-	cmdPSH                   // data push
-	cmdNOP                   // no operation
-	cmdTerminate             // explict terminate session
+	cmdSYN byte = iota // stream open
+	cmdRST             // stream close
+	cmdPSH             // data push
+	cmdNOP             // no operation
 )
 
 const (

@@ -109,7 +109,6 @@ func (s *Session) Close() error {
 			s.streams[k].Close()
 		}
 		s.streamLock.Unlock()
-		s.writeFrame(newFrame(cmdTerminate, 0))
 		s.conn.Close()
 		close(s.die)
 		s.bucketCond.Signal()
@@ -222,9 +221,6 @@ func (s *Session) recvLoop() {
 
 			switch f.cmd {
 			case cmdNOP:
-			case cmdTerminate:
-				s.Close()
-				return
 			case cmdSYN:
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
