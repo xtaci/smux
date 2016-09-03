@@ -158,6 +158,7 @@ func (s *Session) nioread(sid uint32, p []byte) (n int) {
 }
 
 // session read a frame from underlying connection
+// it's data is pointed to the input buffer
 func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
 		return f, errors.Wrap(err, "readFrame")
@@ -172,10 +173,10 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
-		f.UnmarshalBinary(buffer[:headerSize+length])
+		f.ZeroCopyUnmarshal(buffer[:headerSize+length])
 		return f, nil
 	}
-	f.UnmarshalBinary(buffer[:headerSize])
+	f.ZeroCopyUnmarshal(buffer[:headerSize])
 	return f, nil
 }
 
