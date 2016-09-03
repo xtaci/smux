@@ -27,8 +27,8 @@ type Session struct {
 	config       *Config
 	nextStreamID uint32 // next stream identifier
 
-	bucket     int32
-	bucketCond *sync.Cond
+	bucket     int32      // token bucket
+	bucketCond *sync.Cond // used for waiting for tokens
 
 	streamBuffers map[uint32][]byte  // stream input buffer
 	streams       map[uint32]*Stream // all streams in this session
