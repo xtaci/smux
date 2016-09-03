@@ -49,10 +49,7 @@ READ:
 
 	if f := s.sess.nioread(s.id); f != nil && f.cmd == cmdPSH {
 		n = copy(b, f.data)
-		if len(f.data) > n {
-			s.buffer = make([]byte, len(f.data)-n)
-			copy(s.buffer, f.data[n:])
-		}
+		s.buffer = f.data[n:]
 		s.rlock.Unlock()
 		return n, nil
 	}

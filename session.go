@@ -240,11 +240,12 @@ func (s *Session) recvLoop() {
 				}
 			case cmdRST:
 				s.streamLock.Lock()
-				if _, ok := s.streams[f.sid]; ok {
-					s.streams[f.sid].Close()
+				if stream, ok := s.streams[f.sid]; ok {
+					s.streamLock.Unlock()
+					stream.Close()
 				} else { // must do nothing if stream is absent
+					s.streamLock.Unlock()
 				}
-				s.streamLock.Unlock()
 			case cmdPSH:
 				rstflag := false
 				s.streamLock.Lock()

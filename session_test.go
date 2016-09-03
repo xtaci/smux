@@ -8,12 +8,17 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"testing"
 	"time"
 )
 
 func init() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	ln, err := net.Listen("tcp", "127.0.0.1:19999")
 	if err != nil {
