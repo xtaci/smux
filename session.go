@@ -225,41 +225,32 @@ func (s *Session) recvLoop() {
 				s.Close()
 				return
 			case cmdSYN:
-				rstflag := false
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
-					s.streams[f.sid] = newStream(f.sid, s.config.MaxFrameSize, s)
-					s.chAccepts <- s.streams[f.sid]
+					stream := newStream(f.sid, s.config.MaxFrameSize, s)
+					s.streams[f.sid] = stream
+					go func() { s.chAccepts <- stream }()
 				} else { // stream exists, RST the peer
-					rstflag = true
+					go s.writeFrame(newFrame(cmdRST, f.sid))
 				}
 				s.streamLock.Unlock()
-
-				if rstflag {
-					s.writeFrame(newFrame(cmdRST, f.sid))
-				}
 			case cmdRST:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
-					s.streamLock.Unlock()
-					stream.Close()
+					go stream.Close()
 				} else { // must do nothing if stream is absent
-					s.streamLock.Unlock()
 				}
+				s.streamLock.Unlock()
 			case cmdPSH:
-				rstflag := false
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					s.frameQueues[f.sid] = append(s.frameQueues[f.sid], f)
 					stream.notifyReadEvent()
 				} else { // stream is absent
-					rstflag = true
+					go s.writeFrame(newFrame(cmdRST, f.sid))
 				}
 				s.streamLock.Unlock()
-				if rstflag {
-					s.writeFrame(newFrame(cmdRST, f.sid))
-				}
 			default:
 				s.Close()
 				return
