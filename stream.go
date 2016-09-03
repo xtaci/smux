@@ -92,6 +92,20 @@ func (s *Stream) Close() error {
 	return nil
 }
 
+// notify the stream that the session has closed
+func (s *Stream) sessionClose() error {
+	s.dieLock.Lock()
+	defer s.dieLock.Unlock()
+
+	select {
+	case <-s.die:
+		return errors.New(errBrokenPipe)
+	default:
+		close(s.die)
+	}
+	return nil
+}
+
 // split large byte buffer into smaller frames
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 	var frames []Frame
