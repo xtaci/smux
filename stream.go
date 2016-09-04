@@ -11,8 +11,6 @@ import (
 // Stream implements io.ReadWriteCloser
 type Stream struct {
 	id          uint32
-	buffer      []byte
-	rlock       sync.Mutex
 	rstflag     int32
 	sess        *Session
 	frameSize   int
@@ -32,10 +30,8 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	return s
 }
 
-// Read implements io.ReadWriteCloser, only one reader can enter
+// Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
-	s.rlock.Lock()
-	defer s.rlock.Unlock()
 READ:
 	select {
 	case <-s.die:
@@ -43,16 +39,8 @@ READ:
 	default:
 	}
 
-	if len(s.buffer) > 0 {
-		n, err = copy(b, s.buffer), nil
-		s.buffer = s.buffer[n:]
-		return
-	}
-
-	if f, ok := s.sess.nioread(s.id); ok {
-		n, err = copy(b, f.data), nil
-		s.buffer = f.data[n:]
-		return
+	if n = s.sess.nioread(s.id, b); n > 0 {
+		return n, err
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		s.Close()
 		return 0, errors.New(errBrokenPipe)
