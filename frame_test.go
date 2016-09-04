@@ -17,16 +17,8 @@ func TestFrame(t *testing.T) {
 	y.UnmarshalBinary(btsX)
 	btsY, _ := y.MarshalBinary()
 
-	z := Frame{}
-	z.ZeroCopyUnmarshal(btsX)
-	btsZ, _ := z.MarshalBinary()
-
 	if !bytes.Equal(btsX, btsY) {
 		t.Fatal("frame encode/decode failed")
-	}
-
-	if !bytes.Equal(btsY, btsZ) {
-		t.Fatal("frame encode/decode zero copy failed")
 	}
 
 	t.Log(rawHeader(btsX).String())
