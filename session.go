@@ -215,8 +215,6 @@ func (s *Session) recvLoop() {
 					stream := newStream(f.sid, s.config.MaxFrameSize, s)
 					s.streams[f.sid] = stream
 					go func() { s.chAccepts <- stream }()
-				} else { // stream exists, RST the peer
-					go s.writeFrame(newFrame(cmdRST, f.sid))
 				}
 				s.streamLock.Unlock()
 			case cmdRST:
@@ -232,8 +230,6 @@ func (s *Session) recvLoop() {
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					stream.pushBytes(f.data)
 					stream.notifyReadEvent()
-				} else { // stream is absent
-					go s.writeFrame(newFrame(cmdRST, f.sid))
 				}
 				s.streamLock.Unlock()
 			default:
