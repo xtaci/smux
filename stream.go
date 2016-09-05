@@ -13,6 +13,8 @@ type Stream struct {
 	id          uint32
 	rstflag     int32
 	sess        *Session
+	buffer      bytes.Buffer
+	bufferLock  sync.Mutex
 	frameSize   int
 	chReadEvent chan struct{} // notify a read event
 	die         chan struct{} // flag the stream has closed
@@ -39,8 +41,13 @@ READ:
 	default:
 	}
 
-	if n = s.sess.nioread(s.id, b); n > 0 {
-		return n, err
+	s.bufferLock.Lock()
+	n, err = s.buffer.Read(b)
+	s.bufferLock.Unlock()
+
+	if n > 0 {
+		s.sess.returnTokens(n)
+		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		s.Close()
 		return 0, errors.New(errBrokenPipe)
@@ -104,6 +111,22 @@ func (s *Stream) sessionClose() error {
 		close(s.die)
 	}
 	return nil
+}
+
+// pushBytes a slice into buffer
+func (s *Stream) pushBytes(p []byte) {
+	s.bufferLock.Lock()
+	s.buffer.Write(p)
+	s.bufferLock.Unlock()
+}
+
+// recycleTokens transform remaining bytes to tokens(will truncate buffer)
+func (s *Stream) recycleTokens() (n int) {
+	s.bufferLock.Lock()
+	n = s.buffer.Len()
+	s.buffer.Reset()
+	s.bufferLock.Unlock()
+	return
 }
 
 // split large byte buffer into smaller frames

@@ -1,7 +1,6 @@
 package smux
 
 import (
-	"bytes"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -31,9 +30,8 @@ type Session struct {
 	bucket     int32      // token bucket
 	bucketCond *sync.Cond // used for waiting for tokens
 
-	streamBuffers map[uint32]*bytes.Buffer // stream input buffer
-	streams       map[uint32]*Stream       // all streams in this session
-	streamLock    sync.Mutex               // locks streams && frameQueues
+	streams    map[uint32]*Stream // all streams in this session
+	streamLock sync.Mutex         // locks streams && frameQueues
 
 	die            chan struct{} // flag session has died
 	dieLock        sync.Mutex
@@ -49,7 +47,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.conn = conn
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
-	s.streamBuffers = make(map[uint32]*bytes.Buffer)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.chClosedStream = make(chan uint32, defaultCloseWait)
 	s.bucket = int32(config.MaxReceiveBuffer)
@@ -73,11 +70,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
 	stream := newStream(sid, s.config.MaxFrameSize, s)
-	streamBuffer := new(bytes.Buffer)
 
 	s.streamLock.Lock()
 	s.streams[sid] = stream
-	s.streamBuffers[sid] = streamBuffer
 	s.streamLock.Unlock()
 
 	s.writeFrame(newFrame(cmdSYN, sid))
@@ -146,18 +141,11 @@ func (s *Session) streamClosed(sid uint32) {
 	}()
 }
 
-// nonblocking read from session pool, for streams
-func (s *Session) nioread(sid uint32, p []byte) (n int) {
-	s.streamLock.Lock()
-	if streamBuffer, ok := s.streamBuffers[sid]; ok {
-		n, _ = streamBuffer.Read(p)
-		if n > 0 {
-			atomic.AddInt32(&s.bucket, int32(n))
-			s.bucketCond.Signal()
-		}
+// returnTokens
+func (s *Session) returnTokens(n int) {
+	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+		s.bucketCond.Signal()
 	}
-	s.streamLock.Unlock()
-	return
 }
 
 // session read a frame from underlying connection
@@ -189,12 +177,12 @@ func (s *Session) monitor() {
 		select {
 		case sid := <-s.chClosedStream:
 			s.streamLock.Lock()
-			delete(s.streams, sid)
-			if n := s.streamBuffers[sid].Len(); n > 0 { // return remaining tokens to the bucket
-				atomic.AddInt32(&s.bucket, int32(n))
-				s.bucketCond.Signal()
+			if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
+				if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+					s.bucketCond.Signal()
+				}
 			}
-			delete(s.streamBuffers, sid)
+			delete(s.streams, sid)
 			s.streamLock.Unlock()
 		case <-s.die:
 			return
@@ -225,9 +213,7 @@ func (s *Session) recvLoop() {
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
 					stream := newStream(f.sid, s.config.MaxFrameSize, s)
-					streamBuffer := new(bytes.Buffer)
 					s.streams[f.sid] = stream
-					s.streamBuffers[f.sid] = streamBuffer
 					go func() { s.chAccepts <- stream }()
 				} else { // stream exists, RST the peer
 					go s.writeFrame(newFrame(cmdRST, f.sid))
@@ -244,7 +230,7 @@ func (s *Session) recvLoop() {
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
-					s.streamBuffers[f.sid].Write(f.data)
+					stream.pushBytes(f.data)
 					stream.notifyReadEvent()
 				} else { // stream is absent
 					go s.writeFrame(newFrame(cmdRST, f.sid))
