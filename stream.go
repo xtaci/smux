@@ -156,7 +156,7 @@ func (s *Stream) notifyReadEvent() {
 	}
 }
 
-// mark this stream has benn reset
+// mark this stream has been reset
 func (s *Stream) markRST() {
 	atomic.StoreInt32(&s.rstflag, 1)
 }

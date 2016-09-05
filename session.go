@@ -141,7 +141,7 @@ func (s *Session) streamClosed(sid uint32) {
 	}()
 }
 
-// returnTokens
+// returnTokens is called by stream to return token after read
 func (s *Session) returnTokens(n int) {
 	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
 		s.bucketCond.Signal()
