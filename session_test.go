@@ -166,6 +166,20 @@ func TestCloseThenOpen(t *testing.T) {
 	}
 }
 
+func TestStreamDoubleClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	stream.Close()
+	if err := stream.Close(); err == nil {
+		t.Log("double close doesn't return error")
+	}
+	session.Close()
+}
+
 func TestTinyReadBuffer(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
@@ -334,7 +348,20 @@ func TestReadStreamAfterSessionClose(t *testing.T) {
 	if _, err := stream.Read(buf); err != nil {
 		t.Log(err)
 	} else {
+		t.Fatal("read stream after session close succeeded")
+	}
+}
+
+func TestWriteStreamAfterConnectionClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
 		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	session.conn.Close()
+	if _, err := stream.Write([]byte("write after connection close")); err == nil {
+		t.Fatal("write after connection close failed")
 	}
 }
 
