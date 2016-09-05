@@ -31,7 +31,7 @@ type Session struct {
 	bucketCond *sync.Cond // used for waiting for tokens
 
 	streams    map[uint32]*Stream // all streams in this session
-	streamLock sync.Mutex         // locks streams && frameQueues
+	streamLock sync.Mutex         // locks streams
 
 	die            chan struct{} // flag session has died
 	dieLock        sync.Mutex
