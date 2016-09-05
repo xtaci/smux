@@ -322,6 +322,22 @@ func TestWriteAfterClose(t *testing.T) {
 	}
 }
 
+func TestReadStreamAfterSessionClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	session.Close()
+	buf := make([]byte, 10)
+	if _, err := stream.Read(buf); err != nil {
+		t.Log(err)
+	} else {
+		t.Fatal(err)
+	}
+}
+
 func TestNumStreamAfterClose(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
