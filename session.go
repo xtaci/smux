@@ -32,10 +32,9 @@ type Session struct {
 	streams    map[uint32]*Stream // all streams in this session
 	streamLock sync.Mutex         // locks streams
 
-	die            chan struct{} // flag session has died
-	dieLock        sync.Mutex
-	chAccepts      chan *Stream
-	chClosedStream chan uint32
+	die       chan struct{} // flag session has died
+	dieLock   sync.Mutex
+	chAccepts chan *Stream
 
 	dataReady int32 // flag data has arrived
 }
