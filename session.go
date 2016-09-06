@@ -57,7 +57,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		s.nextStreamID = 2
 	}
 	go s.recvLoop()
-	go s.monitor()
 	go s.keepalive()
 	return s
 }
@@ -133,12 +132,14 @@ func (s *Session) NumStreams() int {
 
 // notify the session that a stream has closed
 func (s *Session) streamClosed(sid uint32) {
-	go func() {
-		select {
-		case s.chClosedStream <- sid:
-		case <-s.die:
+	s.streamLock.Lock()
+	if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
+		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+			s.bucketCond.Signal()
 		}
-	}()
+	}
+	delete(s.streams, sid)
+	s.streamLock.Unlock()
 }
 
 // returnTokens is called by stream to return token after read
@@ -169,25 +170,6 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	}
 	f.ZeroCopyUnmarshal(buffer[:headerSize])
 	return f, nil
-}
-
-// monitors streams
-func (s *Session) monitor() {
-	for {
-		select {
-		case sid := <-s.chClosedStream:
-			s.streamLock.Lock()
-			if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
-				if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-					s.bucketCond.Signal()
-				}
-			}
-			delete(s.streams, sid)
-			s.streamLock.Unlock()
-		case <-s.die:
-			return
-		}
-	}
 }
 
 // recvLoop keeps on reading from underlying connection if tokens are available
