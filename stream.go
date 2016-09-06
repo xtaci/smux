@@ -129,20 +129,18 @@ func (s *Stream) recycleTokens() (n int) {
 	return
 }
 
-// split large byte buffer into smaller frames
+// split large byte buffer into smaller frames, reference only
 func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
 	var frames []Frame
 	for len(bts) > int(s.frameSize) {
 		frame := newFrame(cmd, sid)
-		frame.data = make([]byte, s.frameSize)
-		n := copy(frame.data, bts)
-		bts = bts[n:]
+		frame.data = bts[:s.frameSize]
+		bts = bts[s.frameSize:]
 		frames = append(frames, frame)
 	}
 	if len(bts) > 0 {
 		frame := newFrame(cmd, sid)
-		frame.data = make([]byte, len(bts))
-		copy(frame.data, bts)
+		frame.data = bts
 		frames = append(frames, frame)
 	}
 	return frames
