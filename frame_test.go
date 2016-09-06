@@ -18,7 +18,7 @@ func TestFrame(t *testing.T) {
 	btsY, _ := y.MarshalBinary()
 
 	z := Frame{}
-	z.ZeroCopyUnmarshal(btsX)
+	z.zeroCopyUnmarshal(btsX)
 	btsZ, _ := z.MarshalBinary()
 
 	if !bytes.Equal(btsX, btsY) {

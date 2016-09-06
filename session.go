@@ -165,10 +165,10 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
-		f.ZeroCopyUnmarshal(buffer[:headerSize+length])
+		f.zeroCopyUnmarshal(buffer[:headerSize+length])
 		return f, nil
 	}
-	f.ZeroCopyUnmarshal(buffer[:headerSize])
+	f.zeroCopyUnmarshal(buffer[:headerSize])
 	return f, nil
 }
 

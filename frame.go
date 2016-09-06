@@ -61,9 +61,9 @@ func (f *Frame) UnmarshalBinary(bts []byte) error {
 	return nil
 }
 
-// ZeroCopyUnmarshal a byte slice into a frame,
+// zeroCopyUnmarshal a byte slice into a frame,
 // and just reference to the input slice
-func (f *Frame) ZeroCopyUnmarshal(bts []byte) error {
+func (f *Frame) zeroCopyUnmarshal(bts []byte) error {
 	f.ver = bts[0]
 	f.cmd = bts[1]
 	datalength := binary.LittleEndian.Uint16(bts[2:])
