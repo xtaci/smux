@@ -11,7 +11,6 @@ import (
 
 const (
 	defaultAcceptBacklog = 1024
-	defaultCloseWait     = 1024
 )
 
 const (
@@ -48,7 +47,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
-	s.chClosedStream = make(chan uint32, defaultCloseWait)
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketCond = sync.NewCond(&sync.Mutex{})
 	if client {
