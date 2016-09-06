@@ -99,18 +99,11 @@ func (s *Stream) Close() error {
 	return nil
 }
 
-// notify the stream that the session has closed
-func (s *Stream) sessionClose() error {
+// session closes the stream
+func (s *Stream) sessionClose() {
 	s.dieLock.Lock()
 	defer s.dieLock.Unlock()
-
-	select {
-	case <-s.die:
-		return errors.New(errBrokenPipe)
-	default:
-		close(s.die)
-	}
-	return nil
+	close(s.die)
 }
 
 // pushBytes a slice into buffer
