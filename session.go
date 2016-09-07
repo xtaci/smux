@@ -15,6 +15,7 @@ const (
 
 const (
 	errBrokenPipe      = "broken pipe"
+	errConnReset       = "connection reset by peer"
 	errInvalidProtocol = "invalid protocol version"
 )
 
@@ -67,11 +68,13 @@ func (s *Session) OpenStream() (*Stream, error) {
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
+	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
+		return nil, errors.Wrap(err, "writeFrame")
+	}
+
 	s.streamLock.Lock()
 	s.streams[sid] = stream
 	s.streamLock.Unlock()
-
-	s.writeFrame(newFrame(cmdSYN, sid))
 	return stream, nil
 }
 
@@ -87,7 +90,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 }
 
 // Close is used to close the session and all streams.
-func (s *Session) Close() error {
+func (s *Session) Close() (err error) {
 	s.dieLock.Lock()
 	defer s.dieLock.Unlock()
 
@@ -95,16 +98,15 @@ func (s *Session) Close() error {
 	case <-s.die:
 		return errors.New(errBrokenPipe)
 	default:
+		close(s.die)
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		s.conn.Close()
-		close(s.die)
 		s.bucketCond.Signal()
+		return s.conn.Close()
 	}
-	return nil
 }
 
 // IsClosed does a safe check to see if we have shutdown

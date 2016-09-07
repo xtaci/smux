@@ -63,7 +63,7 @@ func (f *Frame) UnmarshalBinary(bts []byte) error {
 
 // zeroCopyUnmarshal a byte slice into a frame,
 // and just reference to the input slice
-func (f *Frame) zeroCopyUnmarshal(bts []byte) error {
+func (f *Frame) zeroCopyUnmarshal(bts []byte) {
 	f.ver = bts[0]
 	f.cmd = bts[1]
 	datalength := binary.LittleEndian.Uint16(bts[2:])
@@ -71,7 +71,6 @@ func (f *Frame) zeroCopyUnmarshal(bts []byte) error {
 	if datalength > 0 {
 		f.data = bts[headerSize:]
 	}
-	return nil
 }
 
 type rawHeader []byte

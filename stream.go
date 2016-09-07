@@ -49,8 +49,8 @@ READ:
 		s.sess.returnTokens(n)
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
-		s.Close()
-		return 0, errors.New(errBrokenPipe)
+		_ = s.Close()
+		return 0, errors.New(errConnReset)
 	}
 
 	select {
@@ -94,9 +94,9 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.sess.streamClosed(s.id)
-		s.sess.writeFrame(newFrame(cmdRST, s.id))
+		_, err := s.sess.writeFrame(newFrame(cmdRST, s.id))
+		return err
 	}
-	return nil
 }
 
 // session closes the stream
