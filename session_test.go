@@ -51,7 +51,6 @@ func handleConnection(conn net.Conn) {
 				}
 			}(stream)
 		} else {
-			log.Println(err)
 			return
 		}
 	}
@@ -110,9 +109,8 @@ func TestSpeed(t *testing.T) {
 				}
 			}
 		}
-		println("total recv:", nrecv)
 		stream.Close()
-		fmt.Println("time for 16MB rtt", time.Since(start))
+		t.Log("time for 16MB rtt", time.Since(start))
 		wg.Done()
 	}()
 	msg := make([]byte, 8192)
@@ -478,5 +476,96 @@ func BenchmarkAcceptClose(b *testing.B) {
 		} else {
 			b.Fatal(err)
 		}
+	}
+}
+func BenchmarkConnSmux(b *testing.B) {
+	cs, ss, err := getSmuxStreamPair()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+/*
+func BenchmarkConnTCP(b *testing.B) {
+	cs, ss, err := getTCPConnectionPair()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+*/
+
+func getSmuxStreamPair() (*Stream, *Stream, error) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	s, err := Server(c2, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := Client(c1, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ss *Stream
+	done := make(chan error)
+	go func() {
+		var rerr error
+		ss, rerr = s.AcceptStream()
+		done <- rerr
+		close(done)
+	}()
+	cs, err := c.OpenStream()
+	if err != nil {
+		return nil, nil, err
+	}
+	err = <-done
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return cs, ss, nil
+}
+
+func getTCPConnectionPair() (net.Conn, net.Conn, error) {
+	lst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var conn0 net.Conn
+	var err0 error
+	done := make(chan struct{})
+	go func() {
+		conn0, err0 = lst.Accept()
+		close(done)
+	}()
+
+	conn1, err := net.Dial("tcp", lst.Addr().String())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	<-done
+	if err0 != nil {
+		return nil, nil, err0
+	}
+	return conn0, conn1, nil
+}
+
+func bench(b *testing.B, rd io.Reader, wr io.Writer) {
+	buf := make([]byte, 128*1024)
+	b.SetBytes(128 * 1024)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		wr.Write(buf)
+		rd.Read(buf)
 	}
 }
