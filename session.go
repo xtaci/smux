@@ -195,12 +195,10 @@ func (s *Session) recvLoop() {
 				if _, ok := s.streams[f.sid]; !ok {
 					stream := newStream(f.sid, s.config.MaxFrameSize, s)
 					s.streams[f.sid] = stream
-					go func() {
-						select {
-						case s.chAccepts <- stream:
-						case <-s.die:
-						}
-					}()
+					select {
+					case s.chAccepts <- stream:
+					case <-s.die:
+					}
 				}
 				s.streamLock.Unlock()
 			case cmdRST:
