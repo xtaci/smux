@@ -36,43 +36,6 @@ func newFrame(cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 
-// MarshalBinary a frame to transmit
-// VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA  |
-func (f *Frame) MarshalBinary() ([]byte, error) {
-	buf := make([]byte, headerSize+len(f.data))
-	buf[0] = version
-	buf[1] = f.cmd
-	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
-	binary.LittleEndian.PutUint32(buf[4:], f.sid)
-	copy(buf[headerSize:], f.data)
-	return buf, nil
-}
-
-// UnmarshalBinary a byte slice into a frame
-func (f *Frame) UnmarshalBinary(bts []byte) error {
-	f.ver = bts[0]
-	f.cmd = bts[1]
-	datalength := binary.LittleEndian.Uint16(bts[2:])
-	f.sid = binary.LittleEndian.Uint32(bts[4:])
-	if datalength > 0 {
-		f.data = make([]byte, datalength)
-		copy(f.data, bts[headerSize:])
-	}
-	return nil
-}
-
-// zeroCopyUnmarshal a byte slice into a frame,
-// and just reference to the input slice
-func (f *Frame) zeroCopyUnmarshal(bts []byte) {
-	f.ver = bts[0]
-	f.cmd = bts[1]
-	datalength := binary.LittleEndian.Uint16(bts[2:])
-	f.sid = binary.LittleEndian.Uint32(bts[4:])
-	if datalength > 0 {
-		f.data = bts[headerSize:]
-	}
-}
-
 type rawHeader []byte
 
 func (h rawHeader) Version() byte {

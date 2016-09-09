@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"encoding/binary"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -160,14 +161,15 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 		return f, errors.New(errInvalidProtocol)
 	}
 
+	f.ver = dec.Version()
+	f.cmd = dec.Cmd()
+	f.sid = dec.StreamID()
 	if length := dec.Length(); length > 0 {
 		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
-		f.zeroCopyUnmarshal(buffer[:headerSize+length])
-		return f, nil
+		f.data = buffer[headerSize : headerSize+length]
 	}
-	f.zeroCopyUnmarshal(buffer[:headerSize])
 	return f, nil
 }
 
@@ -250,9 +252,15 @@ func (s *Session) keepalive() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	bts, _ := f.MarshalBinary()
+	buf := make([]byte, headerSize+len(f.data))
+	buf[0] = version
+	buf[1] = f.cmd
+	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
+	binary.LittleEndian.PutUint32(buf[4:], f.sid)
+	copy(buf[headerSize:], f.data)
+
 	s.writeLock.Lock()
-	n, err = s.conn.Write(bts)
+	n, err = s.conn.Write(buf)
 	s.writeLock.Unlock()
 	return n, err
 }

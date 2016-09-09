@@ -453,14 +453,21 @@ func TestRandomFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, _ = Client(cli, nil)
+
 	f := newFrame(byte(rand.Uint32()), rand.Uint32())
-	f.ver = byte(rand.Uint32())
-	bts, _ := f.MarshalBinary()
 	rnd := make([]byte, rand.Uint32()%1024)
 	io.ReadFull(crand.Reader, rnd)
-	bts = append(bts, rnd...)
-	binary.LittleEndian.PutUint16(bts[2:], uint16(len(rnd)+1)) /// incorrect size
-	session.conn.Write(bts)
+	f.data = rnd
+
+	buf := make([]byte, headerSize+len(f.data))
+	buf[0] = version
+	buf[1] = f.cmd
+	binary.LittleEndian.PutUint16(buf[2:], uint16(len(rnd)+1)) /// incorrect size
+	binary.LittleEndian.PutUint32(buf[4:], f.sid)
+	copy(buf[headerSize:], f.data)
+
+	session.conn.Write(buf)
+	t.Log(rawHeader(buf))
 	cli.Close()
 }
 
