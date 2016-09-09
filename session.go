@@ -253,7 +253,7 @@ func (s *Session) keepalive() {
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
 	buf := make([]byte, headerSize+len(f.data))
-	buf[0] = version
+	buf[0] = f.ver
 	buf[1] = f.cmd
 	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
 	binary.LittleEndian.PutUint32(buf[4:], f.sid)
