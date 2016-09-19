@@ -238,6 +238,7 @@ func (s *Session) keepalive() {
 		select {
 		case <-tickerPing.C:
 			s.writeFrame(newFrame(cmdNOP, 0))
+			s.bucketCond.Signal() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
