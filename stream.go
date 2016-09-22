@@ -111,7 +111,12 @@ func (s *Stream) Close() error {
 func (s *Stream) sessionClose() {
 	s.dieLock.Lock()
 	defer s.dieLock.Unlock()
-	close(s.die)
+
+	select {
+	case <-s.die:
+	default:
+		close(s.die)
+	}
 }
 
 // pushBytes a slice into buffer
