@@ -5,7 +5,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
 )
 
 // Config is used to tune the Smux session

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
 )
 
 // Stream implements net.Conn

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
 )
 
 const (
@@ -117,7 +117,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
 	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
-		return nil, errors.Wrap(err, "writeFrame")
+		return nil, errors.New("writeFrame: " + err.Error())
 	}
 
 	s.streamLock.Lock()
@@ -224,7 +224,7 @@ func (s *Session) returnTokens(n int) {
 // it's data is pointed to the input buffer
 func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
-		return f, errors.Wrap(err, "readFrame")
+		return f, errors.New("readFrame: " + err.Error())
 	}
 
 	dec := rawHeader(buffer)
@@ -237,7 +237,7 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	f.sid = dec.StreamID()
 	if length := dec.Length(); length > 0 {
 		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
-			return f, errors.Wrap(err, "readFrame")
+			return f, errors.New("readFrame: " + err.Error())
 		}
 		f.data = buffer[headerSize : headerSize+length]
 	}
@@ -377,3 +377,14 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	result := <-req.result
 	return result.n, result.err
 }
+
+func (s *Session) WriteCustomCMD(cmd byte, bts []byte) (n int, err error) {
+	if s.IsClosed() {
+		return 0, errors.New(errBrokenPipe)
+	}
+	f := newFrame(cmd, 0)
+	f.data = bts
+
+	return s.writeFrame(f)
+}
+
