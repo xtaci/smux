@@ -38,6 +38,7 @@ type Session struct {
 	dieLock   sync.Mutex
 	chAccepts chan *Stream
 
+	xmitPool  sync.Pool
 	dataReady int32 // flag data has arrived
 }
 
@@ -50,6 +51,10 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketCond = sync.NewCond(&sync.Mutex{})
+	s.xmitPool.New = func() interface{} {
+		return make([]byte, (1<<16)+headerSize)
+	}
+
 	if client {
 		s.nextStreamID = 1
 	} else {
@@ -253,7 +258,7 @@ func (s *Session) keepalive() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	buf := make([]byte, headerSize+len(f.data))
+	buf := s.xmitPool.Get().([]byte)
 	buf[0] = f.ver
 	buf[1] = f.cmd
 	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
@@ -261,15 +266,8 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	copy(buf[headerSize:], f.data)
 
 	s.writeLock.Lock()
-	n, err = s.conn.Write(buf)
+	n, err = s.conn.Write(buf[:headerSize+len(f.data)])
 	s.writeLock.Unlock()
-	return n, err
-}
-
-// writeBinary writes the byte slice to the underlying connection
-func (s *Session) writeBinary(bts []byte) (n int, err error) {
-	s.writeLock.Lock()
-	n, err = s.conn.Write(bts)
-	s.writeLock.Unlock()
+	s.xmitPool.Put(buf)
 	return n, err
 }

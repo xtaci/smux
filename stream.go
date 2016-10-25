@@ -2,7 +2,6 @@ package smux
 
 import (
 	"bytes"
-	"encoding/binary"
 	"sync"
 	"sync/atomic"
 
@@ -71,22 +70,10 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
-	// preallocate buffer
-	buffer := make([]byte, len(frames)*headerSize+len(b))
-	bts := buffer
-
-	// combine frames into a large blob
 	for k := range frames {
-		bts[0] = version
-		bts[1] = frames[k].cmd
-		binary.LittleEndian.PutUint16(bts[2:], uint16(len(frames[k].data)))
-		binary.LittleEndian.PutUint32(bts[4:], frames[k].sid)
-		copy(bts[headerSize:], frames[k].data)
-		bts = bts[len(frames[k].data)+headerSize:]
-	}
-
-	if _, err = s.sess.writeBinary(buffer); err != nil {
-		return 0, err
+		if _, err := s.sess.writeFrame(frames[k]); err != nil {
+			return 0, err
+		}
 	}
 	return len(b), nil
 }
