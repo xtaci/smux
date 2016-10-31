@@ -4,21 +4,23 @@ import (
 	"bytes"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 )
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
-	id          uint32
-	rstflag     int32
-	sess        *Session
-	buffer      bytes.Buffer
-	bufferLock  sync.Mutex
-	frameSize   int
-	chReadEvent chan struct{} // notify a read event
-	die         chan struct{} // flag the stream has closed
-	dieLock     sync.Mutex
+	id           uint32
+	rstflag      int32
+	sess         *Session
+	buffer       bytes.Buffer
+	bufferLock   sync.Mutex
+	frameSize    int
+	chReadEvent  chan struct{} // notify a read event
+	die          chan struct{} // flag the stream has closed
+	dieLock      sync.Mutex
+	readDeadline int64
 }
 
 // newStream initiates a Stream struct
@@ -34,10 +36,20 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
+	var deadline <-chan time.Time
+	d := atomic.LoadInt64(&s.readDeadline)
+	if d > 0 {
+		timer := time.NewTimer(time.Duration(d - time.Now().UnixNano()))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
 READ:
 	select {
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
+	case <-deadline:
+		return n, errTimeout
 	default:
 	}
 
@@ -56,6 +68,8 @@ READ:
 	select {
 	case <-s.chReadEvent:
 		goto READ
+	case <-deadline:
+		return n, errTimeout
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
 	}
@@ -92,6 +106,12 @@ func (s *Stream) Close() error {
 		_, err := s.sess.writeFrame(newFrame(cmdRST, s.id))
 		return err
 	}
+}
+
+// SetReadDeadline sets the read deadline as defined by
+// net.Conn.SetReadDeadline.
+func (s *Stream) SetReadDeadline(t time.Time) {
+	atomic.StoreInt64(&s.readDeadline, t.UnixNano())
 }
 
 // session closes the stream
@@ -151,3 +171,11 @@ func (s *Stream) notifyReadEvent() {
 func (s *Stream) markRST() {
 	atomic.StoreInt32(&s.rstflag, 1)
 }
+
+var errTimeout error = &timeoutError{}
+
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string   { return "i/o timeout" }
+func (e *timeoutError) Timeout() bool   { return true }
+func (e *timeoutError) Temporary() bool { return true }

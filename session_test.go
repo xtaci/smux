@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -469,6 +470,34 @@ func TestRandomFrame(t *testing.T) {
 	session.conn.Write(buf)
 	t.Log(rawHeader(buf))
 	cli.Close()
+}
+
+func TestReadDeadline(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	const N = 100
+	buf := make([]byte, 10)
+	var readErr error
+	for i := 0; i < N; i++ {
+		msg := fmt.Sprintf("hello%v", i)
+		stream.Write([]byte(msg))
+		stream.SetReadDeadline(time.Now().Add(-1 * time.Minute))
+		if _, readErr = stream.Read(buf); readErr != nil {
+			break
+		}
+	}
+	if readErr != nil {
+		if !strings.Contains(readErr.Error(), "i/o timeout") {
+			t.Fatalf("Wrong error: %v", readErr)
+		}
+	} else {
+		t.Fatal("No error when reading with past deadline")
+	}
+	session.Close()
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
