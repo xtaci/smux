@@ -20,7 +20,7 @@ type Stream struct {
 	chReadEvent  chan struct{} // notify a read event
 	die          chan struct{} // flag the stream has closed
 	dieLock      sync.Mutex
-	readDeadline int64
+	readDeadline atomic.Value
 }
 
 // newStream initiates a Stream struct
@@ -37,9 +37,8 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
 	var deadline <-chan time.Time
-	d := atomic.LoadInt64(&s.readDeadline)
-	if d > 0 {
-		timer := time.NewTimer(time.Duration(d - time.Now().UnixNano()))
+	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer := time.NewTimer(d.Sub(time.Now()))
 		defer timer.Stop()
 		deadline = timer.C
 	}
@@ -110,8 +109,10 @@ func (s *Stream) Close() error {
 
 // SetReadDeadline sets the read deadline as defined by
 // net.Conn.SetReadDeadline.
-func (s *Stream) SetReadDeadline(t time.Time) {
-	atomic.StoreInt64(&s.readDeadline, t.UnixNano())
+// A zero time value disables the deadline.
+func (s *Stream) SetReadDeadline(t time.Time) error {
+	s.readDeadline.Store(t)
+	return nil
 }
 
 // session closes the stream
