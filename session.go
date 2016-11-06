@@ -19,6 +19,16 @@ const (
 	errInvalidProtocol = "invalid protocol version"
 )
 
+type writeRequest struct {
+	frame  Frame
+	result chan writeResult
+}
+
+type writeResult struct {
+	n   int
+	err error
+}
+
 // Session defines a multiplexed connection for streams
 type Session struct {
 	conn      io.ReadWriteCloser
@@ -39,6 +49,10 @@ type Session struct {
 
 	xmitPool  sync.Pool
 	dataReady int32 // flag data has arrived
+
+	deadline atomic.Value
+
+	writes chan writeRequest
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -53,6 +67,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.xmitPool.New = func() interface{} {
 		return make([]byte, (1<<16)+headerSize)
 	}
+	s.writes = make(chan writeRequest)
 
 	if client {
 		s.nextStreamID = 1
@@ -60,6 +75,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		s.nextStreamID = 2
 	}
 	go s.recvLoop()
+	go s.sendLoop()
 	go s.keepalive()
 	return s
 }
@@ -86,9 +102,17 @@ func (s *Session) OpenStream() (*Stream, error) {
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
+	var deadline <-chan time.Time
+	if d, ok := s.deadline.Load().(time.Time); ok && !d.IsZero() {
+		timer := time.NewTimer(d.Sub(time.Now()))
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	select {
 	case stream := <-s.chAccepts:
 		return stream, nil
+	case <-deadline:
+		return nil, errTimeout
 	case <-s.die:
 		return nil, errors.New(errBrokenPipe)
 	}
@@ -132,6 +156,13 @@ func (s *Session) NumStreams() int {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	return len(s.streams)
+}
+
+// SetDeadline sets a deadline used by Accept* calls.
+// A zero time value disables the deadline.
+func (s *Session) SetDeadline(t time.Time) error {
+	s.deadline.Store(t)
+	return nil
 }
 
 // notify the session that a stream has closed
@@ -257,19 +288,56 @@ func (s *Session) keepalive() {
 	}
 }
 
+func (s *Session) sendLoop() {
+	for {
+		select {
+		case <-s.die:
+			return
+		case request, ok := <-s.writes:
+			if !ok {
+				continue
+			}
+			buf := s.xmitPool.Get().([]byte)
+			buf[0] = request.frame.ver
+			buf[1] = request.frame.cmd
+			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
+			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+			copy(buf[headerSize:], request.frame.data)
+
+			s.writeLock.Lock()
+			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
+			s.writeLock.Unlock()
+			s.xmitPool.Put(buf)
+
+			n -= headerSize
+			if n < 0 {
+				n = 0
+			}
+
+			result := writeResult{
+				n:   n,
+				err: err,
+			}
+
+			request.result <- result
+			close(request.result)
+		}
+	}
+}
+
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	buf := s.xmitPool.Get().([]byte)
-	buf[0] = f.ver
-	buf[1] = f.cmd
-	binary.LittleEndian.PutUint16(buf[2:], uint16(len(f.data)))
-	binary.LittleEndian.PutUint32(buf[4:], f.sid)
-	copy(buf[headerSize:], f.data)
+	req := writeRequest{
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case <-s.die:
+		return 0, errors.New(errBrokenPipe)
+	case s.writes <- req:
+	}
 
-	s.writeLock.Lock()
-	n, err = s.conn.Write(buf[:headerSize+len(f.data)])
-	s.writeLock.Unlock()
-	s.xmitPool.Put(buf)
-	return n, err
+	result := <-req.result
+	return result.n, result.err
 }
