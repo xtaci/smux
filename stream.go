@@ -2,6 +2,7 @@ package smux
 
 import (
 	"bytes"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,7 +62,7 @@ READ:
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
-		return 0, errors.New(errConnReset)
+		return 0, io.EOF
 	}
 
 	select {

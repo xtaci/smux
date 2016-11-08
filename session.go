@@ -16,7 +16,6 @@ const (
 
 const (
 	errBrokenPipe      = "broken pipe"
-	errConnReset       = "connection reset by peer"
 	errInvalidProtocol = "invalid protocol version"
 )
 
