@@ -12,16 +12,17 @@ import (
 
 // Stream implements io.ReadWriteCloser
 type Stream struct {
-	id           uint32
-	rstflag      int32
-	sess         *Session
-	buffer       bytes.Buffer
-	bufferLock   sync.Mutex
-	frameSize    int
-	chReadEvent  chan struct{} // notify a read event
-	die          chan struct{} // flag the stream has closed
-	dieLock      sync.Mutex
-	readDeadline atomic.Value
+	id            uint32
+	rstflag       int32
+	sess          *Session
+	buffer        bytes.Buffer
+	bufferLock    sync.Mutex
+	frameSize     int
+	chReadEvent   chan struct{} // notify a read event
+	die           chan struct{} // flag the stream has closed
+	dieLock       sync.Mutex
+	readDeadline  atomic.Value
+	writeDeadline atomic.Value
 }
 
 // newStream initiates a Stream struct
@@ -77,6 +78,13 @@ READ:
 
 // Write implements io.ReadWriteCloser
 func (s *Stream) Write(b []byte) (n int, err error) {
+	var deadline <-chan time.Time
+	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer := time.NewTimer(d.Sub(time.Now()))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
 	select {
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
@@ -84,12 +92,34 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
+	sent := 0
 	for k := range frames {
-		if _, err := s.sess.writeFrame(frames[k]); err != nil {
-			return 0, err
+		req := writeRequest{
+			frame:  frames[k],
+			result: make(chan writeResult, 1),
+		}
+
+		select {
+		case s.sess.writes <- req:
+		case <-s.die:
+			return sent, errors.New(errBrokenPipe)
+		case <-deadline:
+			return sent, errTimeout
+		}
+
+		select {
+		case result := <-req.result:
+			sent += result.n
+			if result.err != nil {
+				return sent, result.err
+			}
+		case <-s.die:
+			return sent, errors.New(errBrokenPipe)
+		case <-deadline:
+			return sent, errTimeout
 		}
 	}
-	return len(b), nil
+	return sent, nil
 }
 
 // Close implements io.ReadWriteCloser
@@ -113,6 +143,27 @@ func (s *Stream) Close() error {
 // A zero time value disables the deadline.
 func (s *Stream) SetReadDeadline(t time.Time) error {
 	s.readDeadline.Store(t)
+	return nil
+}
+
+// SetWriteDeadline sets the write deadline as defined by
+// net.Conn.SetWriteDeadline.
+// A zero time value disables the deadline.
+func (s *Stream) SetWriteDeadline(t time.Time) error {
+	s.writeDeadline.Store(t)
+	return nil
+}
+
+// SetDeadline sets both read and write deadlines as defined by
+// net.Conn.SetDeadline.
+// A zero time value disables the deadlines.
+func (s *Stream) SetDeadline(t time.Time) error {
+	if err := s.SetReadDeadline(t); err != nil {
+		return err
+	}
+	if err := s.SetWriteDeadline(t); err != nil {
+		return err
+	}
 	return nil
 }
 
