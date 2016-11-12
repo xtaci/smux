@@ -3,6 +3,7 @@ package smux
 import (
 	"bytes"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -126,6 +127,26 @@ func (s *Stream) sessionClose() {
 	default:
 		close(s.die)
 	}
+}
+
+// LocalAddr satisfies net.Conn interface
+func (s *Stream) LocalAddr() net.Addr {
+	if ts, ok := s.sess.conn.(interface {
+		LocalAddr() net.Addr
+	}); ok {
+		return ts.LocalAddr()
+	}
+	return nil
+}
+
+// RemoteAddr satisfies net.Conn interface
+func (s *Stream) RemoteAddr() net.Addr {
+	if ts, ok := s.sess.conn.(interface {
+		RemoteAddr() net.Addr
+	}); ok {
+		return ts.RemoteAddr()
+	}
+	return nil
 }
 
 // pushBytes a slice into buffer
