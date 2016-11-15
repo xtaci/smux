@@ -91,6 +91,7 @@ func TestSpeed(t *testing.T) {
 	}
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
+	t.Log(stream.LocalAddr(), stream.RemoteAddr())
 
 	start := time.Now()
 	var wg sync.WaitGroup
