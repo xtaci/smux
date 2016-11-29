@@ -126,13 +126,14 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 // Close implements io.ReadWriteCloser
 func (s *Stream) Close() error {
 	s.dieLock.Lock()
-	defer s.dieLock.Unlock()
 
 	select {
 	case <-s.die:
+		s.dieLock.Unlock()
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
+		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
 		_, err := s.sess.writeFrame(newFrame(cmdRST, s.id))
 		return err

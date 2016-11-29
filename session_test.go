@@ -180,6 +180,31 @@ func TestStreamDoubleClose(t *testing.T) {
 	session.Close()
 }
 
+func TestConcurrentClose(t *testing.T) {
+	cli, err := net.Dial("tcp", "127.0.0.1:19999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := Client(cli, nil)
+	numStreams := 100
+	streams := make([]*Stream, 0, numStreams)
+	var wg sync.WaitGroup
+	wg.Add(numStreams)
+	for i := 0; i < 100; i++ {
+		stream, _ := session.OpenStream()
+		streams = append(streams, stream)
+	}
+	for _, s := range streams {
+		stream := s
+		go func() {
+			stream.Close()
+			wg.Done()
+		}()
+	}
+	session.Close()
+	wg.Wait()
+}
+
 func TestTinyReadBuffer(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
