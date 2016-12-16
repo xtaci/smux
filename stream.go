@@ -37,6 +37,11 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	return s
 }
 
+// ID returns the unique stream ID.
+func (s *Stream) ID() uint32 {
+    return s.id
+}
+
 // Read implements io.ReadWriteCloser
 func (s *Stream) Read(b []byte) (n int, err error) {
 	var deadline <-chan time.Time
