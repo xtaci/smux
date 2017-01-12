@@ -31,8 +31,7 @@ type writeResult struct {
 
 // Session defines a multiplexed connection for streams
 type Session struct {
-	conn      io.ReadWriteCloser
-	writeLock sync.Mutex
+	conn io.ReadWriteCloser
 
 	config       *Config
 	nextStreamID uint32 // next stream identifier
@@ -64,9 +63,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketCond = sync.NewCond(&sync.Mutex{})
-	s.xmitPool.New = func() interface{} {
-		return make([]byte, (1<<16)+headerSize)
-	}
 	s.writes = make(chan writeRequest)
 
 	if client {
@@ -290,6 +286,7 @@ func (s *Session) keepalive() {
 }
 
 func (s *Session) sendLoop() {
+	buf := make([]byte, (1<<16)+headerSize)
 	for {
 		select {
 		case <-s.die:
@@ -298,17 +295,12 @@ func (s *Session) sendLoop() {
 			if !ok {
 				continue
 			}
-			buf := s.xmitPool.Get().([]byte)
 			buf[0] = request.frame.ver
 			buf[1] = request.frame.cmd
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 			copy(buf[headerSize:], request.frame.data)
-
-			s.writeLock.Lock()
 			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
-			s.writeLock.Unlock()
-			s.xmitPool.Put(buf)
 
 			n -= headerSize
 			if n < 0 {
