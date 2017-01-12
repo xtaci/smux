@@ -11,7 +11,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Stream implements io.ReadWriteCloser
+// Stream implements net.Conn
 type Stream struct {
 	id            uint32
 	rstflag       int32
@@ -39,10 +39,10 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 
 // ID returns the unique stream ID.
 func (s *Stream) ID() uint32 {
-    return s.id
+	return s.id
 }
 
-// Read implements io.ReadWriteCloser
+// Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
 	var deadline <-chan time.Time
 	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
@@ -82,7 +82,7 @@ READ:
 	}
 }
 
-// Write implements io.ReadWriteCloser
+// Write implements net.Conn
 func (s *Stream) Write(b []byte) (n int, err error) {
 	var deadline <-chan time.Time
 	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
@@ -128,7 +128,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	return sent, nil
 }
 
-// Close implements io.ReadWriteCloser
+// Close implements net.Conn
 func (s *Stream) Close() error {
 	s.dieLock.Lock()
 
