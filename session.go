@@ -46,7 +46,6 @@ type Session struct {
 	dieLock   sync.Mutex
 	chAccepts chan *Stream
 
-	xmitPool  sync.Pool
 	dataReady int32 // flag data has arrived
 
 	deadline atomic.Value
