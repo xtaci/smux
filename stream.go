@@ -140,7 +140,7 @@ func (s *Stream) Close() error {
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
-		_, err := s.sess.writeFrame(newFrame(cmdRST, s.id))
+		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
 		return err
 	}
 }

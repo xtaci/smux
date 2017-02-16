@@ -11,7 +11,7 @@ const (
 
 const ( // cmds
 	cmdSYN byte = iota // stream open
-	cmdRST             // stream close
+	cmdFIN             // stream close
 	cmdPSH             // data push
 	cmdNOP             // no operation
 )

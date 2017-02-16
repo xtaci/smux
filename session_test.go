@@ -441,7 +441,7 @@ func TestRandomFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allcmds := []byte{cmdSYN, cmdRST, cmdPSH, cmdNOP}
+	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())

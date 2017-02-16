@@ -237,7 +237,7 @@ func (s *Session) recvLoop() {
 					}
 				}
 				s.streamLock.Unlock()
-			case cmdRST:
+			case cmdFIN:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
 					stream.markRST()
