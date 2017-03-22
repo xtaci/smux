@@ -183,12 +183,9 @@ func (s *Session) streamClosed(sid uint32) {
 
 // returnTokens is called by stream to return token after read
 func (s *Session) returnTokens(n int) {
-	oldvalue := atomic.LoadInt32(&s.bucket)
-	newvalue := atomic.AddInt32(&s.bucket, int32(n))
-	if oldvalue <= 0 && newvalue > 0 {
+	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
 		s.notifyBucket()
 	}
-
 }
 
 // session read a frame from underlying connection
