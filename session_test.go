@@ -533,21 +533,16 @@ func TestWriteDeadline(t *testing.T) {
 	}
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
-	const N = 100
 	buf := make([]byte, 10)
 	var writeErr error
-	for i := 0; i < N; i++ {
+	for {
 		stream.SetWriteDeadline(time.Now().Add(-1 * time.Minute))
 		if _, writeErr = stream.Write(buf); writeErr != nil {
+			if !strings.Contains(writeErr.Error(), "i/o timeout") {
+				t.Fatalf("Wrong error: %v", writeErr)
+			}
 			break
 		}
-	}
-	if writeErr != nil {
-		if !strings.Contains(writeErr.Error(), "i/o timeout") {
-			t.Fatalf("Wrong error: %v", writeErr)
-		}
-	} else {
-		t.Fatal("No error when writing with past deadline")
 	}
 	session.Close()
 }
