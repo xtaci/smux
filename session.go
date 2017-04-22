@@ -34,8 +34,9 @@ type writeResult struct {
 type Session struct {
 	conn io.ReadWriteCloser
 
-	config       *Config
-	nextStreamID uint32 // next stream identifier
+	config           *Config
+	nextStreamID     uint32 // next stream identifier
+	nextStreamIDLock sync.Mutex
 
 	bucket       int32         // token bucket
 	bucketNotify chan struct{} // used for waiting for tokens
@@ -84,15 +85,21 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, errors.New(errBrokenPipe)
 	}
 
-	if atomic.LoadInt32(&s.goAway) > 0 {
+	// generate stream id
+	s.nextStreamIDLock.Lock()
+	if s.goAway > 0 {
+		s.nextStreamIDLock.Unlock()
 		return nil, errors.New(errGoAway)
 	}
 
-	sid := atomic.AddUint32(&s.nextStreamID, 2)
+	s.nextStreamID += 2
+	sid := s.nextStreamID
 	if sid == sid%2 { // stream-id overflows
-		atomic.StoreInt32(&s.goAway, 1)
+		s.goAway = 1
+		s.nextStreamIDLock.Unlock()
 		return nil, errors.New(errGoAway)
 	}
+	s.nextStreamIDLock.Unlock()
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
