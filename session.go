@@ -49,6 +49,8 @@ type Session struct {
 
 	dataReady int32 // flag data has arrived
 
+	goAway int32 // flag id exhausted
+
 	deadline atomic.Value
 
 	writes chan writeRequest
@@ -82,8 +84,13 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, errors.New(errBrokenPipe)
 	}
 
+	if atomic.LoadInt32(&s.goAway) > 0 {
+		return nil, errors.New(errGoAway)
+	}
+
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
 	if sid == sid%2 { // stream-id overflows
+		atomic.StoreInt32(&s.goAway, 1)
 		return nil, errors.New(errGoAway)
 	}
 
