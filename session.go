@@ -17,6 +17,7 @@ const (
 const (
 	errBrokenPipe      = "broken pipe"
 	errInvalidProtocol = "invalid protocol version"
+	errGoAway          = "stream id overflows, should start a new connection"
 )
 
 type writeRequest struct {
@@ -67,7 +68,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	if client {
 		s.nextStreamID = 1
 	} else {
-		s.nextStreamID = 2
+		s.nextStreamID = 0
 	}
 	go s.recvLoop()
 	go s.sendLoop()
@@ -82,6 +83,10 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 
 	sid := atomic.AddUint32(&s.nextStreamID, 2)
+	if sid == sid%2 { // stream-id overflows
+		return nil, errors.New(errGoAway)
+	}
+
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
 	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
