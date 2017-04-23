@@ -190,7 +190,7 @@ func TestConcurrentClose(t *testing.T) {
 	streams := make([]*Stream, 0, numStreams)
 	var wg sync.WaitGroup
 	wg.Add(numStreams)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < numStreams; i++ {
 		stream, _ := session.OpenStream()
 		streams = append(streams, stream)
 	}
@@ -201,8 +201,8 @@ func TestConcurrentClose(t *testing.T) {
 			wg.Done()
 		}()
 	}
-	session.Close()
 	wg.Wait()
+	session.Close()
 }
 
 func TestTinyReadBuffer(t *testing.T) {
