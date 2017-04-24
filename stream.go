@@ -24,6 +24,11 @@ type Stream struct {
 	dieLock       sync.Mutex
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+
+	bucket         int32         // token bucket
+	bucketNotify   chan struct{} // used for waiting for tokens
+	fulflag        int32
+	empflag        int32
 }
 
 // newStream initiates a Stream struct
@@ -34,6 +39,10 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
+
+	s.bucket = int32(sess.MaxStreamBuffer)
+	s.bucketNotify = make(chan struct{}, 1)
+	s.empflag = int32(1)
 	return s
 }
 
@@ -66,6 +75,7 @@ READ:
 
 	if n > 0 {
 		s.sess.returnTokens(n)
+		s.returnTokens(n)
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
@@ -91,10 +101,16 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		deadline = timer.C
 	}
 
+CHECK_DIE:
 	select {
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
 	default:
+	}
+
+	if atomic.LoadInt32(&s.fulflag) == 1 {
+		<-s.bucketNotify
+		goto CHECK_DIE
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
@@ -211,6 +227,12 @@ func (s *Stream) pushBytes(p []byte) {
 	s.bufferLock.Lock()
 	s.buffer.Write(p)
 	s.bufferLock.Unlock()
+
+	remain := atomic.AddInt32(&s.bucket, -int32(len(p)))
+	if remain <= 0 && atomic.LoadInt32(&s.empflag) == 1 {
+		s.sess.writeFrame(newFrame(cmdFUL, s.id))
+		atomic.StoreInt32(&s.empflag, 0)
+	}
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
@@ -250,6 +272,30 @@ func (s *Stream) notifyReadEvent() {
 // mark this stream has been reset
 func (s *Stream) markRST() {
 	atomic.StoreInt32(&s.rstflag, 1)
+}
+
+// mark this stream has been pause write
+func (s *Stream) markFUL() {
+	atomic.StoreInt32(&s.fulflag, 1)
+}
+
+// mark this stream has been resume write
+func (s *Stream) markEMP() {
+	atomic.StoreInt32(&s.fulflag, 0)
+	select {
+	case s.bucketNotify <- struct{}{}:
+	default:
+	}
+}
+
+// returnTokens is called by stream to return token after read
+func (s *Stream) returnTokens(n int) {
+	if atomic.AddInt32(&s.bucket, int32(n)) > int32(s.sess.MinStreamBuffer) {
+		if atomic.LoadInt32(&s.empflag) == 0 {
+			atomic.StoreInt32(&s.empflag, 1)
+			s.sess.writeFrame(newFrame(cmdEMP, s.id))
+		}
+	}
 }
 
 var errTimeout error = &timeoutError{}

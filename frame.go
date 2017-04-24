@@ -14,6 +14,8 @@ const ( // cmds
 	cmdFIN             // stream close, a.k.a EOF mark
 	cmdPSH             // data push
 	cmdNOP             // no operation
+	cmdFUL             // buffer full
+	cmdEMP             // buffer empty
 )
 
 const (

@@ -55,6 +55,9 @@ type Session struct {
 	deadline atomic.Value
 
 	writes chan writeRequest
+
+	MaxStreamBuffer int
+	MinStreamBuffer int
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -67,6 +70,9 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
+
+	s.MaxStreamBuffer = config.MaxStreamBuffer
+	s.MinStreamBuffer = config.MaxStreamBuffer - config.MinStreamBuffer
 
 	if client {
 		s.nextStreamID = 1
@@ -267,6 +273,19 @@ func (s *Session) recvLoop() {
 				if stream, ok := s.streams[f.sid]; ok {
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					stream.pushBytes(f.data)
+					stream.notifyReadEvent()
+				}
+				s.streamLock.Unlock()
+			case cmdFUL:
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					stream.markFUL()
+				}
+				s.streamLock.Unlock()
+			case cmdEMP:
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					stream.markEMP()
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
