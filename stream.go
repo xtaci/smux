@@ -275,12 +275,12 @@ func (s *Stream) markRST() {
 }
 
 // mark this stream has been pause write
-func (s *Stream) markFUL() {
+func (s *Stream) pauseWrite() {
 	atomic.StoreInt32(&s.fulflag, 1)
 }
 
 // mark this stream has been resume write
-func (s *Stream) markEMP() {
+func (s *Stream) resumeWrite() {
 	atomic.StoreInt32(&s.fulflag, 0)
 	select {
 	case s.bucketNotify <- struct{}{}:

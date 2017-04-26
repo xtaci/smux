@@ -74,6 +74,12 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.MaxStreamBuffer = config.MaxStreamBuffer
 	s.MinStreamBuffer = config.MaxStreamBuffer - config.MinStreamBuffer
 
+	if !config.EnableStreamBuffer {
+		// StreamBuffer > config.MaxReceiveBuffer to disable
+		s.MaxStreamBuffer = 0x7fff0000 // ~2048GB
+		s.MinStreamBuffer = 0x7fff0000
+	}
+
 	if client {
 		s.nextStreamID = 1
 	} else {
@@ -279,13 +285,13 @@ func (s *Session) recvLoop() {
 			case cmdFUL:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
-					stream.markFUL()
+					stream.pauseWrite()
 				}
 				s.streamLock.Unlock()
 			case cmdEMP:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
-					stream.markEMP()
+					stream.resumeWrite()
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
