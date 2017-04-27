@@ -246,11 +246,7 @@ func (s *Stream) pushBytes(p []byte) {
 		return
 	}
 
-	if used < int32(s.sess.MaxStreamBuffer) {
-		return
-	}
-
-	if lastReadOut > (used / 2) {
+	if used < int32(s.sess.MaxStreamBuffer) || lastReadOut > (used / 2) {
 		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 		return
 	}
