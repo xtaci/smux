@@ -29,6 +29,8 @@ type Stream struct {
 	bucketNotify   chan struct{} // used for waiting for tokens
 	fulflag        int32
 	empflag        int32
+	guessRead      int32         // for guess read speed
+	boostTimeout   time.Time      // for initial boost
 }
 
 // newStream initiates a Stream struct
@@ -40,9 +42,11 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.sess = sess
 	s.die = make(chan struct{})
 
-	s.bucket = int32(sess.MaxStreamBuffer)
+	s.bucket = int32(0)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.empflag = int32(1)
+	s.guessRead = int32(0)
+	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 	return s
 }
 
@@ -228,10 +232,31 @@ func (s *Stream) pushBytes(p []byte) {
 	s.buffer.Write(p)
 	s.bufferLock.Unlock()
 
-	remain := atomic.AddInt32(&s.bucket, -int32(len(p)))
-	if remain <= 0 && atomic.LoadInt32(&s.empflag) == 1 {
-		s.sess.writeFrame(newFrame(cmdFUL, s.id))
-		atomic.StoreInt32(&s.empflag, 0)
+	if !s.sess.EnableStreamBuffer {
+		return
+	}
+
+	n := len(p)
+	used := atomic.AddInt32(&s.bucket, int32(n))
+	lastReadOut := atomic.SwapInt32(&s.guessRead, int32(0))	// reset read
+
+	// hard limit
+	if used > int32(s.sess.MaxReceiveBuffer / 2) {
+		s.sendPause()
+		return
+	}
+
+	if used < int32(s.sess.MaxStreamBuffer) {
+		return
+	}
+
+	if lastReadOut > (used / 2) {
+		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
+		return
+	}
+
+	if time.Now().After(s.boostTimeout) {
+		s.sendPause()
 	}
 }
 
@@ -290,11 +315,30 @@ func (s *Stream) resumeWrite() {
 
 // returnTokens is called by stream to return token after read
 func (s *Stream) returnTokens(n int) {
-	if atomic.AddInt32(&s.bucket, int32(n)) > int32(s.sess.MinStreamBuffer) {
-		if atomic.LoadInt32(&s.empflag) == 0 {
-			atomic.StoreInt32(&s.empflag, 1)
-			s.sess.writeFrame(newFrame(cmdEMP, s.id))
-		}
+	if !s.sess.EnableStreamBuffer {
+		return
+	}
+
+	used := atomic.AddInt32(&s.bucket, -int32(n))
+	totalRead := atomic.AddInt32(&s.guessRead, int32(n))
+	if used <= int32(s.sess.MinStreamBuffer) || totalRead > ((used + int32(n)) / 2) {
+		s.sendResume()
+	}
+}
+
+// send cmdFUL to pause write
+func (s *Stream) sendPause() {
+	if atomic.LoadInt32(&s.empflag) == 1 {
+		s.sess.writeFrame(newFrame(cmdFUL, s.id))
+		atomic.StoreInt32(&s.empflag, 0)
+	}
+}
+
+// send cmdEMP to resume write
+func (s *Stream) sendResume() {
+	if atomic.LoadInt32(&s.empflag) == 0 {
+		atomic.StoreInt32(&s.empflag, 1)
+		s.sess.writeFrame(newFrame(cmdEMP, s.id))
 	}
 }
 

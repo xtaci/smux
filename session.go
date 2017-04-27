@@ -56,8 +56,11 @@ type Session struct {
 
 	writes chan writeRequest
 
+	EnableStreamBuffer bool
+	MaxReceiveBuffer int
 	MaxStreamBuffer int
 	MinStreamBuffer int
+	BoostTimeout time.Duration
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -71,14 +74,12 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
 
+	s.MaxReceiveBuffer = config.MaxReceiveBuffer
 	s.MaxStreamBuffer = config.MaxStreamBuffer
-	s.MinStreamBuffer = config.MaxStreamBuffer - config.MinStreamBuffer
+	s.MinStreamBuffer = config.MinStreamBuffer
+	s.BoostTimeout = time.Duration(config.BoostTimeout) * time.Millisecond
 
-	if !config.EnableStreamBuffer {
-		// StreamBuffer > config.MaxReceiveBuffer to disable
-		s.MaxStreamBuffer = 0x7fff0000 // ~2048GB
-		s.MinStreamBuffer = 0x7fff0000
-	}
+	s.EnableStreamBuffer = config.EnableStreamBuffer
 
 	if client {
 		s.nextStreamID = 1
