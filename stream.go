@@ -28,9 +28,14 @@ type Stream struct {
 	bucket         int32         // token bucket
 	bucketNotify   chan struct{} // used for waiting for tokens
 	fulflag        int32
+	empflagLock    sync.Mutex
 	empflag        int32
-	guessRead      int32         // for guess read speed
+	countRead      int32         // for guess read speed
 	boostTimeout   time.Time      // for initial boost
+	guessBucket    int32         // for guess needed stream buffer size
+
+	lastWrite      time.Time
+	guessNeeded    int32
 }
 
 // newStream initiates a Stream struct
@@ -45,8 +50,10 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.bucket = int32(0)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.empflag = int32(1)
-	s.guessRead = int32(0)
+	s.countRead = int32(0)
 	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
+	s.guessBucket = int32(s.sess.MaxStreamBuffer)
+	s.lastWrite = time.Now()
 	return s
 }
 
@@ -242,15 +249,21 @@ func (s *Stream) pushBytes(p []byte) {
 
 	n := len(p)
 	used := atomic.AddInt32(&s.bucket, int32(n))
-	lastReadOut := atomic.SwapInt32(&s.guessRead, int32(0))	// reset read
+	lastReadOut := atomic.SwapInt32(&s.countRead, int32(0))	// reset read
 
 	// hard limit
-	if used > int32(s.sess.MaxReceiveBuffer / 2) {
+	if used > int32(s.sess.MaxStreamBuffer) {
 		s.sendPause()
 		return
 	}
 
-	if used < int32(s.sess.MaxStreamBuffer) || lastReadOut > (used / 2) {
+	if lastReadOut != 0 {
+		s.lastWrite = time.Now()
+		needed := atomic.LoadInt32(&s.guessNeeded)
+		s.guessBucket = int32(float32(s.guessBucket) * 0.8 + float32(needed) * 0.2)
+	}
+
+	if used <= s.guessBucket {
 		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 		return
 	}
@@ -320,27 +333,37 @@ func (s *Stream) returnTokens(n int) {
 	}
 
 	used := atomic.AddInt32(&s.bucket, -int32(n))
-	atomic.AddInt32(&s.guessRead, int32(n))
-	totalRead := atomic.AddInt32(&s.guessRead, int32(n))
-	if used <= int32(s.sess.MinStreamBuffer) || totalRead > ((used + int32(n)) / 2) {
+	totalRead := atomic.AddInt32(&s.countRead, int32(n))
+	dt := time.Now().Sub(s.lastWrite)
+	needed := totalRead * int32(s.sess.rtt / dt)
+	atomic.StoreInt32(&s.guessNeeded, needed)
+	if used <= 0 || (needed > 0 && needed >= used) {
 		s.sendResume()
 	}
 }
 
 // send cmdFUL to pause write
 func (s *Stream) sendPause() {
-	if atomic.LoadInt32(&s.empflag) == 1 {
+	s.empflagLock.Lock()
+	if s.empflag == 1 {
+		s.empflag = 0
+		s.empflagLock.Unlock()
 		s.sess.writeFrame(newFrame(cmdFUL, s.id))
-		atomic.StoreInt32(&s.empflag, 0)
+		return
 	}
+	s.empflagLock.Unlock()
 }
 
 // send cmdEMP to resume write
 func (s *Stream) sendResume() {
-	if atomic.LoadInt32(&s.empflag) == 0 {
-		atomic.StoreInt32(&s.empflag, 1)
+	s.empflagLock.Lock()
+	if s.empflag == 0 {
+		s.empflag = 1
+		s.empflagLock.Unlock()
 		s.sess.writeFrame(newFrame(cmdEMP, s.id))
+		return
 	}
+	s.empflagLock.Unlock()
 }
 
 var errTimeout error = &timeoutError{}

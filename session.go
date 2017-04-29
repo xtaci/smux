@@ -61,6 +61,10 @@ type Session struct {
 	MaxStreamBuffer int
 	MinStreamBuffer int
 	BoostTimeout time.Duration
+
+	rttSn uint32
+	rttTest time.Time
+	rtt time.Duration
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -76,9 +80,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 
 	s.MaxReceiveBuffer = config.MaxReceiveBuffer
 	s.MaxStreamBuffer = config.MaxStreamBuffer
-	s.MinStreamBuffer = config.MinStreamBuffer
 	s.BoostTimeout = config.BoostTimeout
-
 	s.EnableStreamBuffer = config.EnableStreamBuffer
 
 	if client {
@@ -257,6 +259,9 @@ func (s *Session) recvLoop() {
 
 			switch f.cmd {
 			case cmdNOP:
+				if s.EnableStreamBuffer {
+					s.writeFrame(newFrame(cmdACK, f.sid))
+				}
 			case cmdSYN:
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
@@ -296,6 +301,10 @@ func (s *Session) recvLoop() {
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
+			case cmdACK:
+				if f.sid == atomic.LoadUint32(&s.rttSn) {
+					s.rtt = time.Now().Sub(s.rttTest)
+				}
 			default:
 				s.Close()
 				return
@@ -312,10 +321,15 @@ func (s *Session) keepalive() {
 	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
 	defer tickerPing.Stop()
 	defer tickerTimeout.Stop()
+
+	s.rttTest = time.Now()
+	s.writeFrame(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrame(newFrame(cmdNOP, 0))
+			s.rttTest = time.Now()
+			s.writeFrame(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
