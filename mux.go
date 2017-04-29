@@ -31,9 +31,6 @@ type Config struct {
 	// maximum bytes that each Stream can use
 	MaxStreamBuffer int
 
-	// send cmdEMP earlier when remain ?? bytes data in buffer
-	MinStreamBuffer int
-
 	// for initial boost
 	BoostTimeout time.Duration
 }
@@ -46,8 +43,7 @@ func DefaultConfig() *Config {
 		MaxFrameSize:       4096,
 		MaxReceiveBuffer:   16 * 1024 * 1024,
 		EnableStreamBuffer: false,
-		MaxStreamBuffer:    16384,
-		MinStreamBuffer:    4096,
+		MaxStreamBuffer:    1024 * 1024,
 		BoostTimeout:       10 * time.Second,
 	}
 }
@@ -71,9 +67,6 @@ func VerifyConfig(config *Config) error {
 	}
 	if config.MaxStreamBuffer <= 0 {
 		return errors.New("max stream receive buffer must be positive")
-	}
-	if config.MinStreamBuffer < 0 || config.MinStreamBuffer > config.MaxStreamBuffer {
-		return errors.New("min stream receive buffer must be positive and <= MaxStreamBuffer")
 	}
 	return nil
 }

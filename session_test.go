@@ -561,7 +561,6 @@ func TestSlowReadBlocking(t *testing.T) {
 		MaxReceiveBuffer:   1 * 1024 * 1024,
 		EnableStreamBuffer: true,
 		MaxStreamBuffer:    16384,
-		MinStreamBuffer:    4096,
 		BoostTimeout:       100 * time.Millisecond,
 	}
 
@@ -628,7 +627,7 @@ func TestSlowReadBlocking(t *testing.T) {
 			const SIZE = 4 * 1024 // 4KB
 
 			var fwg sync.WaitGroup
-			/*fwg.Add(1)
+			fwg.Add(1)
 			go func() { // read = 4 * 2000 KB/s
 				defer fwg.Done()
 				rbuf := make([]byte, SIZE, SIZE)
@@ -641,9 +640,9 @@ func TestSlowReadBlocking(t *testing.T) {
 						}
 						break
 					}
-					<- time.After(200 * time.Microsecond) // slow down read
+					<- time.After(500 * time.Microsecond) // slow down read
 				}
-			}()*/
+			}()
 
 			buf := make([]byte, SIZE, SIZE)
 			for i := range buf {
@@ -707,7 +706,7 @@ func TestSlowReadBlocking(t *testing.T) {
 				} else if string(buf[:n]) != msg {
 					t.Fatal(err)
 				} else {
-					t.Log(stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+//					t.Log(stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
 					t.Log(stream.id, i, "time for normal stream rtt", time.Since(start))
 				}
 				<- time.After(200 * time.Millisecond)
