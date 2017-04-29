@@ -77,7 +77,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.MaxReceiveBuffer = config.MaxReceiveBuffer
 	s.MaxStreamBuffer = config.MaxStreamBuffer
 	s.MinStreamBuffer = config.MinStreamBuffer
-	s.BoostTimeout = time.Duration(config.BoostTimeout) * time.Millisecond
+	s.BoostTimeout = config.BoostTimeout
 
 	s.EnableStreamBuffer = config.EnableStreamBuffer
 

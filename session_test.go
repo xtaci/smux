@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -261,6 +263,7 @@ func TestKeepAliveTimeout(t *testing.T) {
 	go func() {
 		ln.Accept()
 	}()
+	defer ln.Close()
 
 	cli, err := net.Dial("tcp", "127.0.0.1:29999")
 	if err != nil {
@@ -283,6 +286,7 @@ func TestServerEcho(t *testing.T) {
 		// handle error
 		panic(err)
 	}
+	defer ln.Close()
 	go func() {
 		if conn, err := ln.Accept(); err == nil {
 			session, _ := Server(conn, nil)
@@ -545,6 +549,174 @@ func TestWriteDeadline(t *testing.T) {
 		}
 	}
 	session.Close()
+}
+
+func TestSlowReadBlocking(t *testing.T) {
+
+	runtime.GOMAXPROCS(runtime.NumCPU() + 2)
+	config := &Config{
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		MaxFrameSize:       4096,
+		MaxReceiveBuffer:   1 * 1024 * 1024,
+		EnableStreamBuffer: true,
+		MaxStreamBuffer:    16384,
+		MinStreamBuffer:    4096,
+		BoostTimeout:       100 * time.Millisecond,
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:39999")
+	if err != nil {
+		panic(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			go func (conn net.Conn) {
+				session, _ := Server(conn, config)
+				for {
+					if stream, err := session.AcceptStream(); err == nil {
+						go func(s io.ReadWriteCloser) {
+							buf := make([]byte, 1024 * 1024, 1024 * 1024)
+							for {
+								n, err := s.Read(buf)
+								if err != nil {
+									return
+								}
+//								t.Log("s1", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
+								s.Write(buf[:n])
+//								t.Log("s2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
+							}
+						}(stream)
+					} else {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	defer ln.Close()
+
+	cli, err := net.Dial("tcp", "127.0.0.1:39999")
+	if err != nil {
+		// handle error
+		panic(err)
+	}
+	defer cli.Close()
+
+
+	session, _ := Client(cli, config)
+	startNotify := make(chan bool, 1)
+	flag := int32(1)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() { // fast write
+		defer wg.Done()
+
+		stream, err := session.OpenStream()
+		if err == nil {
+			t.Log("fast write stream start...")
+			defer func() {
+				stream.Close()
+				t.Log("fast write stream end...")
+			}()
+
+			const SIZE = 4 * 1024 // 4KB
+
+			var fwg sync.WaitGroup
+			/*fwg.Add(1)
+			go func() { // read = 4 * 2000 KB/s
+				defer fwg.Done()
+				rbuf := make([]byte, SIZE, SIZE)
+				for atomic.LoadInt32(&flag) > 0 {
+					stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+					if _, err := stream.Read(rbuf); err != nil {
+						if strings.Contains(err.Error(), "i/o timeout") {
+							//t.Logf("read block too long: %v", err)
+							continue
+						}
+						break
+					}
+					<- time.After(200 * time.Microsecond) // slow down read
+				}
+			}()*/
+
+			buf := make([]byte, SIZE, SIZE)
+			for i := range buf {
+				buf[i] = byte('-')
+			}
+			startNotify <- true
+			for atomic.LoadInt32(&flag) > 0 { // write = 4 * 10000 KB/s
+				stream.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+				_, err := stream.Write(buf)
+				if err != nil {
+					if strings.Contains(err.Error(), "i/o timeout") {
+						//t.Logf("write block too long: %v", err)
+						continue
+					}
+					break
+				}
+				<- time.After(100 * time.Microsecond) // slow down write
+//				t.Log("f2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+			}
+			fwg.Wait()
+
+		} else {
+			t.Fatal(err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() { // normal write
+		defer func() {
+			session.Close()
+			wg.Done()
+		}()
+
+		stream, err := session.OpenStream()
+		if err == nil {
+			t.Log("normal stream start...")
+			defer func() {
+				atomic.StoreInt32(&flag, int32(0))
+				stream.Close()
+				t.Log("normal stream end...")
+			}()
+
+			const N = 25
+			buf := make([]byte, 12)
+			<- startNotify
+			for i := 0; i < N; i++ {
+				msg := fmt.Sprintf("hello%v", i)
+				start := time.Now()
+
+				stream.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+				_, err := stream.Write([]byte(msg))
+				if err != nil && strings.Contains(err.Error(), "i/o timeout") {
+					t.Log(stream.id, i, err, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+					return
+				}
+
+				stream.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				if n, err := stream.Read(buf); err != nil {
+					t.Fatal(stream.id, i, err, "since start", time.Since(start))
+					return
+				} else if string(buf[:n]) != msg {
+					t.Fatal(err)
+				} else {
+					t.Log(stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+					t.Log(stream.id, i, "time for normal stream rtt", time.Since(start))
+				}
+				<- time.After(200 * time.Millisecond)
+			}
+		} else {
+			t.Fatal(err)
+		}
+	}()
+	wg.Wait()
 }
 
 func BenchmarkAcceptClose(b *testing.B) {

@@ -34,8 +34,8 @@ type Config struct {
 	// send cmdEMP earlier when remain ?? bytes data in buffer
 	MinStreamBuffer int
 
-	// for initial boost (ms)
-	BoostTimeout int
+	// for initial boost
+	BoostTimeout time.Duration
 }
 
 // DefaultConfig is used to return a default configuration
@@ -48,7 +48,7 @@ func DefaultConfig() *Config {
 		EnableStreamBuffer: false,
 		MaxStreamBuffer:    16384,
 		MinStreamBuffer:    4096,
-		BoostTimeout:       10 * 1000,
+		BoostTimeout:       10 * time.Second,
 	}
 }
 

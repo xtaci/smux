@@ -105,7 +105,6 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		deadline = timer.C
 	}
 
-CHECK_DIE:
 	select {
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
@@ -113,8 +112,13 @@ CHECK_DIE:
 	}
 
 	if atomic.LoadInt32(&s.fulflag) == 1 {
-		<-s.bucketNotify
-		goto CHECK_DIE
+		select {
+		case <-s.bucketNotify:
+		case <-s.die:
+			return 0, errors.New(errBrokenPipe)
+		case <-deadline:
+			return 0, errTimeout
+		}
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
@@ -316,6 +320,7 @@ func (s *Stream) returnTokens(n int) {
 	}
 
 	used := atomic.AddInt32(&s.bucket, -int32(n))
+	atomic.AddInt32(&s.guessRead, int32(n))
 	totalRead := atomic.AddInt32(&s.guessRead, int32(n))
 	if used <= int32(s.sess.MinStreamBuffer) || totalRead > ((used + int32(n)) / 2) {
 		s.sendResume()
