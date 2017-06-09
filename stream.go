@@ -332,7 +332,7 @@ func (s *Stream) returnTokens(n int) {
 
 	used := atomic.AddInt32(&s.bucket, -int32(n))
 	totalRead := atomic.AddInt32(&s.countRead, int32(n))
-	dt := time.Now().Sub(s.lastWrite)
+	dt := time.Now().Sub(s.lastWrite) + 1
 	needed := totalRead * int32(s.sess.rtt / dt)
 	atomic.StoreInt32(&s.guessNeeded, needed)
 	if used <= 0 || (needed > 0 && needed >= used) {
