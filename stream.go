@@ -34,7 +34,7 @@ type Stream struct {
 	boostTimeout   time.Time      // for initial boost
 	guessBucket    int32         // for guess needed stream buffer size
 
-	lastWrite      time.Time
+	lastWrite      atomic.Value
 	guessNeeded    int32
 }
 
@@ -53,7 +53,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.countRead = int32(0)
 	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 	s.guessBucket = int32(s.sess.MaxStreamBuffer)
-	s.lastWrite = time.Now()
+	s.lastWrite.Store(time.Now())
 	return s
 }
 
@@ -72,19 +72,16 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	}
 
 READ:
-	select {
-	case <-deadline:
-		return n, errTimeout
-	default:
-	}
-
 	s.bufferLock.Lock()
 	n, err = s.buffer.Read(b)
+	rem := s.buffer.Len()
 	s.bufferLock.Unlock()
 
 	if n > 0 {
 		s.sess.returnTokens(n)
 		s.returnTokens(n)
+		return n, nil
+	} else if rem > 0 {
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
@@ -256,7 +253,7 @@ func (s *Stream) pushBytes(p []byte) {
 	}
 
 	if lastReadOut != 0 {
-		s.lastWrite = time.Now()
+		s.lastWrite.Store(time.Now())
 		needed := atomic.LoadInt32(&s.guessNeeded)
 		s.guessBucket = int32(float32(s.guessBucket) * 0.8 + float32(needed) * 0.2)
 	}
@@ -332,7 +329,8 @@ func (s *Stream) returnTokens(n int) {
 
 	used := atomic.AddInt32(&s.bucket, -int32(n))
 	totalRead := atomic.AddInt32(&s.countRead, int32(n))
-	dt := time.Now().Sub(s.lastWrite)
+	lastWrite, _ := s.lastWrite.Load().(time.Time)
+	dt := time.Now().Sub(lastWrite) + 1
 	needed := totalRead * int32(s.sess.rtt / dt)
 	atomic.StoreInt32(&s.guessNeeded, needed)
 	if used <= 0 || (needed > 0 && needed >= used) {
