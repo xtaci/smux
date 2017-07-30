@@ -161,6 +161,9 @@ func (s *Stream) Close() error {
 	select {
 	case <-s.die:
 		s.dieLock.Unlock()
+		if atomic.LoadInt32(&s.rstflag) == 1 {
+			return nil
+		}
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
@@ -314,11 +317,13 @@ func (s *Stream) pauseWrite() {
 
 // mark this stream has been resume write
 func (s *Stream) resumeWrite() {
-	atomic.StoreInt32(&s.fulflag, 0)
-	select {
-	case s.bucketNotify <- struct{}{}:
-	default:
+	if atomic.LoadInt32(&s.fulflag) == 1 {
+		select {
+		case s.bucketNotify <- struct{}{}:
+		default:
+		}
 	}
+	atomic.StoreInt32(&s.fulflag, 0)
 }
 
 // returnTokens is called by stream to return token after read
