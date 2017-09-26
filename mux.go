@@ -38,12 +38,12 @@ type Config struct {
 // DefaultConfig is used to return a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepAliveInterval:  10 * time.Second,
+		KeepAliveInterval:  2 * time.Second,
 		KeepAliveTimeout:   30 * time.Second,
 		MaxFrameSize:       4096,
 		MaxReceiveBuffer:   16 * 1024 * 1024,
-		EnableStreamBuffer: false,
-		MaxStreamBuffer:    1024 * 1024,
+		EnableStreamBuffer: true,
+		MaxStreamBuffer:    8 * 1024 * 1024,
 		BoostTimeout:       10 * time.Second,
 	}
 }
