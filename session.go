@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"sort"
 
 	"github.com/pkg/errors"
 )
@@ -55,6 +56,8 @@ type Session struct {
 	deadline atomic.Value
 
 	writes chan writeRequest
+
+	WriteRequestQueueSize int
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -67,6 +70,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
+
+	s.WriteRequestQueueSize = config.WriteRequestQueueSize
 
 	if client {
 		s.nextStreamID = 1
@@ -304,6 +309,88 @@ func (s *Session) keepalive() {
 
 func (s *Session) sendLoop() {
 	buf := make([]byte, (1<<16)+headerSize)
+
+	var queueLock sync.Mutex
+	QueueSize := s.WriteRequestQueueSize
+	streamQueues := make(map[uint32](chan writeRequest))
+	writeNotify := make(chan struct{}, 1)
+	var reqCount int32 = 0
+
+	writes := make(chan writeRequest, 32)
+	go func() {
+		for {
+			select {
+			case <-s.die:
+				return
+			case request, ok := <-writes:
+				if !ok {
+					continue
+				}
+
+				buf[0] = request.frame.ver
+				buf[1] = request.frame.cmd
+				binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
+				binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+				copy(buf[headerSize:], request.frame.data)
+				n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
+
+				n -= headerSize
+				if n < 0 {
+					n = 0
+				}
+
+				result := writeResult{
+					n:   n,
+					err: err,
+				}
+
+				request.result <- result
+				close(request.result)
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-s.die:
+				return
+			case <-writeNotify:
+				for atomic.LoadInt32(&reqCount) > 0 {
+					sids := make([]uint32, 0)
+					queueLock.Lock()
+					for sid, _ := range streamQueues {
+						sids = append(sids, sid)
+					}
+					queueLock.Unlock()
+
+					sort.Slice(sids, func(i, j int) bool { return sids[i] < sids[j] })
+
+					for _, sid := range sids {
+						queueLock.Lock()
+						if queue, ok := streamQueues[sid]; ok {
+							queueLock.Unlock()
+
+							select {
+							case request := <-queue:
+								if request.frame.cmd == cmdFIN {
+									queueLock.Lock()
+									delete(streamQueues, sid)
+									queueLock.Unlock()
+								}
+								writes <- request
+								atomic.AddInt32(&reqCount, -1)
+							default:
+							}
+						} else {
+							queueLock.Unlock()
+						}
+					}
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-s.die:
@@ -312,25 +399,69 @@ func (s *Session) sendLoop() {
 			if !ok {
 				continue
 			}
-			buf[0] = request.frame.ver
-			buf[1] = request.frame.cmd
-			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
-			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
-			copy(buf[headerSize:], request.frame.data)
-			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
 
-			n -= headerSize
-			if n < 0 {
-				n = 0
+			f := request.frame
+			switch f.cmd {
+			case cmdSYN:
+				queueLock.Lock()
+				queue, ok := streamQueues[f.sid]
+				if !ok {
+					queue = make(chan writeRequest, QueueSize)
+					streamQueues[f.sid] = queue
+				}
+				queueLock.Unlock()
+
+				queue <- request
+				atomic.AddInt32(&reqCount, 1)
+
+			case cmdFIN:
+				queueLock.Lock()
+				if queue, ok := streamQueues[f.sid]; ok {
+					queueLock.Unlock()
+
+					select {
+					case queue <- request:
+						atomic.AddInt32(&reqCount, 1)
+					default:
+						// queue full
+						request2 := <-queue
+						queue <- request
+						writes <- request2
+					}
+				} else {
+					queueLock.Unlock()
+					writes <- request
+				}
+
+			case cmdPSH:
+				queueLock.Lock()
+				queue, ok := streamQueues[f.sid]
+				if !ok {
+					queue = make(chan writeRequest, QueueSize)
+					streamQueues[f.sid] = queue
+				}
+				queueLock.Unlock()
+
+				select {
+				case queue <- request:
+					atomic.AddInt32(&reqCount, 1)
+				default:
+					// queue full
+					request2 := <-queue
+					queue <- request
+					writes <- request2
+				}
+
+			default:
+				writes <- request
+				continue
 			}
 
-			result := writeResult{
-				n:   n,
-				err: err,
+			select {
+			case writeNotify <- struct{}{}:
+			default:
 			}
 
-			request.result <- result
-			close(request.result)
 		}
 	}
 }
