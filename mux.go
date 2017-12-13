@@ -24,6 +24,9 @@ type Config struct {
 	// MaxReceiveBuffer is used to control the maximum
 	// number of data in the buffer pool
 	MaxReceiveBuffer int
+
+	// maximum frames for each stream to do round robin
+	WriteRequestQueueSize int
 }
 
 // DefaultConfig is used to return a default configuration
@@ -33,6 +36,7 @@ func DefaultConfig() *Config {
 		KeepAliveTimeout:  30 * time.Second,
 		MaxFrameSize:      4096,
 		MaxReceiveBuffer:  4194304,
+		WriteRequestQueueSize: 1024,
 	}
 }
 
@@ -52,6 +56,9 @@ func VerifyConfig(config *Config) error {
 	}
 	if config.MaxReceiveBuffer <= 0 {
 		return errors.New("max receive buffer must be positive")
+	}
+	if config.WriteRequestQueueSize <= 0 {
+		return errors.New("Write Request QueueSize must be positive")
 	}
 	return nil
 }
