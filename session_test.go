@@ -247,7 +247,7 @@ func TestIsClose(t *testing.T) {
 	}
 	session, _ := Client(cli, nil)
 	session.Close()
-	if session.IsClosed() != true {
+	if !session.IsClosed() {
 		t.Fatal("still open after close")
 	}
 }
@@ -272,7 +272,7 @@ func TestKeepAliveTimeout(t *testing.T) {
 	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(cli, config)
 	<-time.After(3 * time.Second)
-	if session.IsClosed() != true {
+	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}
 }
