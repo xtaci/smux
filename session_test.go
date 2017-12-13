@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	_ "net/http/pprof"
 	"strings"
 	"sync"
 	"testing"
