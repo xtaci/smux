@@ -102,7 +102,7 @@ func TestSpeed(t *testing.T) {
 		for {
 			n, err := stream.Read(buf)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
 				break
 			} else {
 				nrecv += n
@@ -284,26 +284,38 @@ func TestServerEcho(t *testing.T) {
 		panic(err)
 	}
 	go func() {
-		if conn, err := ln.Accept(); err == nil {
-			session, _ := Server(conn, nil)
-			if stream, err := session.OpenStream(); err == nil {
-				const N = 100
-				buf := make([]byte, 10)
-				for i := 0; i < N; i++ {
-					msg := fmt.Sprintf("hello%v", i)
-					stream.Write([]byte(msg))
-					if n, err := stream.Read(buf); err != nil {
-						t.Fatal(err)
-					} else if string(buf[:n]) != msg {
-						t.Fatal(err)
-					}
-				}
-				stream.Close()
-			} else {
-				t.Fatal(err)
+		err := func() error {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
 			}
-		} else {
-			t.Fatal(err)
+			defer conn.Close()
+			session, err := Server(conn, nil)
+			if err != nil {
+				return err
+			}
+			defer session.Close()
+			buf := make([]byte, 10)
+			stream, err := session.OpenStream()
+			if err != nil {
+				return err
+			}
+			defer stream.Close()
+			for i := 0; i < 100; i++ {
+				msg := fmt.Sprintf("hello%v", i)
+				stream.Write([]byte(msg))
+				n, err := stream.Read(buf)
+				if err != nil {
+					return err
+				}
+				if got := string(buf[:n]); got != msg {
+					return fmt.Errorf("got: %q, want: %q", got, msg)
+				}
+			}
+			return nil
+		}()
+		if err != nil {
+			t.Error(err)
 		}
 	}()
 
