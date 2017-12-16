@@ -308,10 +308,7 @@ func (s *Session) sendLoop() {
 		select {
 		case <-s.die:
 			return
-		case request, ok := <-s.writes:
-			if !ok {
-				continue
-			}
+		case request := <-s.writes:
 			buf[0] = request.frame.ver
 			buf[1] = request.frame.cmd
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
