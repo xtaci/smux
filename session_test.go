@@ -156,6 +156,37 @@ func TestParallel(t *testing.T) {
 	session.Close()
 }
 
+func TestParallel2(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+	go handleConnection(srv)
+	session, _ := Client(cli, nil)
+
+	par := 1000
+	messages := 100
+	var wg sync.WaitGroup
+	wg.Add(par)
+	for i := 0; i < par; i++ {
+		 stream, _ := session.OpenStream()
+		 go func(s *Stream) {
+			  buf := make([]byte, 20)
+			  for j := 0; j < messages; j++ {
+				   msg := fmt.Sprintf("hello%v", j)
+				   s.Write([]byte(msg))
+				   if _, err := s.Read(buf); err != nil {
+					    break
+				   }
+			  }
+			  s.Close()
+			  wg.Done()
+		 }(stream)
+	}
+	t.Log("created", session.NumStreams(), "streams")
+	wg.Wait()
+	session.Close()
+}
+
 func TestCloseThenOpen(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
 	if err != nil {
@@ -238,6 +269,42 @@ func TestTinyReadBuffer(t *testing.T) {
 
 	if sent != received {
 		t.Fatal("data mimatch")
+	}
+	session.Close()
+}
+
+func TestTinyReadBuffer2(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+	go handleConnection(srv)
+
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	const N = 100
+	tinybuf := make([]byte, 6)
+	var sent string
+	var received string
+	for i := 0; i < N; i++ {
+		 msg := fmt.Sprintf("hello%v", i)
+		 sent += msg
+		 nsent, err := stream.Write([]byte(msg))
+		 if err != nil {
+			  t.Fatal("cannot write")
+		 }
+		 nrecv := 0
+		 for nrecv < nsent {
+			  if n, err := stream.Read(tinybuf); err == nil {
+				   nrecv += n
+				   received += string(tinybuf[:n])
+			  } else {
+				   t.Fatal("cannot read with tiny buffer")
+			  }
+		 }
+	}
+
+	if sent != received {
+		 t.Fatal("data mimatch")
 	}
 	session.Close()
 }
@@ -332,6 +399,50 @@ func TestServerEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServerEcho2(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+
+	go func() {
+		 session, _ := Server(srv, nil)
+		 if stream, err := session.OpenStream(); err == nil {
+			  const N = 100
+			  buf := make([]byte, 10)
+			  for i := 0; i < N; i++ {
+				   msg := fmt.Sprintf("hello%v", i)
+				   stream.Write([]byte(msg))
+				   if n, err := stream.Read(buf); err != nil {
+					    t.Fatal(err)
+				   } else if string(buf[:n]) != msg {
+					    t.Fatal(err)
+				   }
+			  }
+			  stream.Close()
+		 } else {
+			  t.Fatal(err)
+		 }
+	}()
+
+	if session, err := Client(cli, nil); err == nil {
+		 if stream, err := session.AcceptStream(); err == nil {
+			  buf := make([]byte, 65536)
+			  for {
+				   n, err := stream.Read(buf)
+				   if err != nil {
+					    break
+				   }
+				   stream.Write(buf[:n])
+			  }
+		 } else {
+			  t.Fatal(err)
+		 }
+	} else {
+		 t.Fatal(err)
+	}
+}
+
 
 func TestSendWithoutRecv(t *testing.T) {
 	cli, err := net.Dial("tcp", "127.0.0.1:19999")
@@ -445,7 +556,7 @@ func TestRandomFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
+	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP, cmdACK, cmdFUL, cmdEMP}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
@@ -568,6 +679,7 @@ func TestSlowReadBlocking(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	defer ln.Close()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -597,7 +709,6 @@ func TestSlowReadBlocking(t *testing.T) {
 			}(conn)
 		}
 	}()
-	defer ln.Close()
 
 	cli, err := net.Dial("tcp", "127.0.0.1:39999")
 	if err != nil {
