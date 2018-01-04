@@ -338,7 +338,7 @@ func (s *Stream) returnTokens(n int) {
 	dt := time.Now().Sub(lastWrite) + 1
 	needed := totalRead * int32(s.sess.rtt / dt)
 	atomic.StoreInt32(&s.guessNeeded, needed)
-	if used <= 0 || (needed > 0 && needed >= used) {
+	if used <= 0 || (needed >= 0 && needed >= used) {
 		s.sendResume()
 	}
 }
