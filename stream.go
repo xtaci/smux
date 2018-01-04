@@ -44,6 +44,15 @@ func (s *Stream) ID() uint32 {
 
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
+	if len(b) == 0 {
+		select {
+		case <-s.die:
+			return 0, errors.New(errBrokenPipe)
+		default:
+			return 0, nil
+		}
+	}
+
 	var deadline <-chan time.Time
 	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(time.Until(d))
