@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"errors"
 )
 
 // Stream implements net.Conn
@@ -64,6 +62,15 @@ func (s *Stream) ID() uint32 {
 
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
+	if len(b) == 0 {
+		select {
+		case <-s.die:
+			return 0, ErrBrokenPipe
+		default:
+			return 0, nil
+		}
+	}
+
 	var deadline <-chan time.Time
 	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(d.Sub(time.Now()))
@@ -94,7 +101,7 @@ READ:
 	case <-deadline:
 		return n, errTimeout
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, ErrBrokenPipe
 	}
 }
 
@@ -109,7 +116,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, ErrBrokenPipe
 	default:
 	}
 
@@ -117,7 +124,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		select {
 		case <-s.bucketNotify:
 		case <-s.die:
-			return 0, errors.New(errBrokenPipe)
+			return 0, ErrBrokenPipe
 		case <-deadline:
 			return 0, errTimeout
 		}
@@ -134,7 +141,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		select {
 		case s.sess.writes <- req:
 		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
+			return sent, ErrBrokenPipe
 		case <-deadline:
 			return sent, errTimeout
 		}
@@ -146,7 +153,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				return sent, result.err
 			}
 		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
+			return sent, ErrBrokenPipe
 		case <-deadline:
 			return sent, errTimeout
 		}
@@ -164,7 +171,7 @@ func (s *Stream) Close() error {
 		if atomic.LoadInt32(&s.rstflag) == 1 {
 			return nil
 		}
-		return errors.New(errBrokenPipe)
+		return ErrBrokenPipe
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
