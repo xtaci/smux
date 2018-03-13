@@ -161,6 +161,11 @@ func (s *Session) notifyBucket() {
 	}
 }
 
+// ClosedChannel returns a notification channel for session close
+func (s *Session) ClosedChannel() <-chan struct{} {
+	return s.die
+}
+
 // IsClosed does a safe check to see if we have shutdown
 func (s *Session) IsClosed() bool {
 	select {
