@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"container/heap"
+	"github.com/stretchr/testify/assert"
 )
 
 // setupServer starts new server listening on a random localhost port and
@@ -56,6 +58,19 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 	}
+}
+
+func TestWriteHeap(t *testing.T) {
+	var reqs writeHeap
+	req1 := writeRequest{niceness: 1}
+	heap.Push(&reqs, req1)
+	req3 := writeRequest{niceness: 3}
+	heap.Push(&reqs, req3)
+	req2 := writeRequest{niceness: 2}
+	heap.Push(&reqs, req2)
+	assert.Equal(t, heap.Pop(&reqs), req1)
+	assert.Equal(t, heap.Pop(&reqs), req2)
+	assert.Equal(t, heap.Pop(&reqs), req3)
 }
 
 func TestEcho(t *testing.T) {
@@ -461,7 +476,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(cmdSYN, 1000)
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -474,7 +489,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -486,7 +501,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -499,7 +514,7 @@ func TestRandomFrame(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		f.ver = byte(rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
