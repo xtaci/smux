@@ -13,6 +13,7 @@ import (
 	"time"
 	"container/heap"
 	"github.com/stretchr/testify/assert"
+	"io/ioutil"
 )
 
 // setupServer starts new server listening on a random localhost port and
@@ -590,6 +591,81 @@ func TestWriteDeadline(t *testing.T) {
 			break
 		}
 	}
+	session.Close()
+}
+
+func TestSlowReceiverDoesNotBlock(t *testing.T) {
+	config := &Config{
+		KeepAliveInterval: 10 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
+		MaxFrameSize:      100,
+		MaxPerStreamReceiveBuffer:  1000,
+	}
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		err := func() error {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			session, err := Server(conn, config)
+			if err != nil {
+				return err
+			}
+			defer session.Close()
+			// Accept stream1 but ready nothing from it
+			_, err = session.AcceptStream()
+			if err != nil {
+				return err
+			}
+			stream2, err := session.AcceptStream()
+			io.Copy(ioutil.Discard, stream2)
+			return nil
+		}()
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+
+	cli, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	session, err := Client(cli, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open the first stream and write more than the receive buffer, verifying that it finishes with an error
+	go func() {
+		buf := make([]byte, 2*config.MaxPerStreamReceiveBuffer)
+		if stream, err := session.OpenStream(); err == nil {
+			_, err := stream.Write(buf)
+			assert.NotNil(t, err)
+		} else {
+			t.Fatal(err)
+		}
+	}()
+
+	// Wait until the go routine above runs to create the first stream
+	// TODO(jnewman): make this less flaky
+	time.Sleep(100 * time.Millisecond)
+
+	// The second stream can be written to
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 10*config.MaxPerStreamReceiveBuffer)
+	n, err := stream.Write(buf)
+	assert.Equal(t, n, 10*config.MaxPerStreamReceiveBuffer)
+	assert.Nil(t, err)
 	session.Close()
 }
 

@@ -21,18 +21,18 @@ type Config struct {
 	// frame size to sent to the remote
 	MaxFrameSize int
 
-	// MaxReceiveBuffer is used to control the maximum
+	// MaxPerStreamReceiveBuffer is used to control the maximum
 	// number of data in the buffer pool
-	MaxReceiveBuffer int
+	MaxPerStreamReceiveBuffer int
 }
 
 // DefaultConfig is used to return a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  30 * time.Second,
-		MaxFrameSize:      4096,
-		MaxReceiveBuffer:  4194304,
+		KeepAliveInterval:         10 * time.Second,
+		KeepAliveTimeout:          30 * time.Second,
+		MaxFrameSize:              4096,
+		MaxPerStreamReceiveBuffer: 4194304,
 	}
 }
 
@@ -50,7 +50,7 @@ func VerifyConfig(config *Config) error {
 	if config.MaxFrameSize > 65535 {
 		return errors.New("max frame size must not be larger than 65535")
 	}
-	if config.MaxReceiveBuffer <= 0 {
+	if config.MaxPerStreamReceiveBuffer <= 0 {
 		return errors.New("max receive buffer must be positive")
 	}
 	return nil

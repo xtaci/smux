@@ -13,6 +13,7 @@ const ( // cmds
 	cmdSYN byte = iota // stream open
 	cmdFIN             // stream close, a.k.a EOF mark
 	cmdPSH             // data push
+	cmdACK             // data ack
 	cmdNOP             // no operation
 )
 

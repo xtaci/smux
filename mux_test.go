@@ -51,7 +51,7 @@ func TestConfig(t *testing.T) {
 	}
 
 	config = DefaultConfig()
-	config.MaxReceiveBuffer = 0
+	config.MaxPerStreamReceiveBuffer = 0
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
