@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"container/heap"
+	"github.com/stretchr/testify/assert"
+	"io/ioutil"
 )
 
 // setupServer starts new server listening on a random localhost port and
@@ -56,6 +59,19 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 	}
+}
+
+func TestWriteHeap(t *testing.T) {
+	var reqs writeHeap
+	req1 := writeRequest{niceness: 1}
+	heap.Push(&reqs, req1)
+	req3 := writeRequest{niceness: 3}
+	heap.Push(&reqs, req3)
+	req2 := writeRequest{niceness: 2}
+	heap.Push(&reqs, req2)
+	assert.Equal(t, heap.Pop(&reqs), req1)
+	assert.Equal(t, heap.Pop(&reqs), req2)
+	assert.Equal(t, heap.Pop(&reqs), req3)
 }
 
 func TestEcho(t *testing.T) {
@@ -461,7 +477,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(cmdSYN, 1000)
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -474,7 +490,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -486,7 +502,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -499,7 +515,7 @@ func TestRandomFrame(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		f.ver = byte(rand.Uint32())
-		session.writeFrame(f)
+		session.writeFrame(0, f)
 	}
 	cli.Close()
 
@@ -575,6 +591,81 @@ func TestWriteDeadline(t *testing.T) {
 			break
 		}
 	}
+	session.Close()
+}
+
+func TestSlowReceiverDoesNotBlock(t *testing.T) {
+	config := &Config{
+		KeepAliveInterval: 10 * time.Second,
+		KeepAliveTimeout:  30 * time.Second,
+		MaxFrameSize:      100,
+		MaxPerStreamReceiveBuffer:  1000,
+	}
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		err := func() error {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			session, err := Server(conn, config)
+			if err != nil {
+				return err
+			}
+			defer session.Close()
+			// Accept stream1 but ready nothing from it
+			_, err = session.AcceptStream()
+			if err != nil {
+				return err
+			}
+			stream2, err := session.AcceptStream()
+			io.Copy(ioutil.Discard, stream2)
+			return nil
+		}()
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+
+	cli, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	session, err := Client(cli, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open the first stream and write more than the receive buffer, verifying that it finishes with an error
+	go func() {
+		buf := make([]byte, 2*config.MaxPerStreamReceiveBuffer)
+		if stream, err := session.OpenStream(); err == nil {
+			_, err := stream.Write(buf)
+			assert.NotNil(t, err)
+		} else {
+			t.Fatal(err)
+		}
+	}()
+
+	// Wait until the go routine above runs to create the first stream
+	// TODO(jnewman): make this less flaky
+	time.Sleep(100 * time.Millisecond)
+
+	// The second stream can be written to
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 10*config.MaxPerStreamReceiveBuffer)
+	n, err := stream.Write(buf)
+	assert.Equal(t, n, 10*config.MaxPerStreamReceiveBuffer)
+	assert.Nil(t, err)
 	session.Close()
 }
 

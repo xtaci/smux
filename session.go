@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"container/heap"
 )
 
 const (
@@ -21,13 +22,40 @@ const (
 )
 
 type writeRequest struct {
-	frame  Frame
-	result chan writeResult
+	niceness uint8
+	sequence uint64 // Used to keep the heap ordered by time
+	frame    Frame
+	result   chan writeResult
 }
 
 type writeResult struct {
 	n   int
 	err error
+}
+
+type writeHeap []writeRequest
+
+func (h writeHeap) Len() int { return len(h) }
+func (h writeHeap) Less(i, j int) bool {
+	if h[i].niceness == h[j].niceness {
+		return h[i].sequence < h[j].sequence
+	}
+	return h[i].niceness < h[j].niceness
+}
+func (h writeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *writeHeap) Push(x interface{}) {
+	// Push and Pop use pointer receivers because they modify the slice's length,
+	// not just its contents.
+	*h = append(*h, x.(writeRequest))
+}
+
+func (h *writeHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
 }
 
 // Session defines a multiplexed connection for streams
@@ -37,9 +65,6 @@ type Session struct {
 	config           *Config
 	nextStreamID     uint32 // next stream identifier
 	nextStreamIDLock sync.Mutex
-
-	bucket       int32         // token bucket
-	bucketNotify chan struct{} // used for waiting for tokens
 
 	streams    map[uint32]*Stream // all streams in this session
 	streamLock sync.Mutex         // locks streams
@@ -54,7 +79,10 @@ type Session struct {
 
 	deadline atomic.Value
 
-	writes chan writeRequest
+	writeTicket      chan struct{}
+	writesLock       sync.Mutex
+	writes           writeHeap
+	writeSequenceNum uint64
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -64,9 +92,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
-	s.bucket = int32(config.MaxReceiveBuffer)
-	s.bucketNotify = make(chan struct{}, 1)
-	s.writes = make(chan writeRequest)
+	s.writeTicket = make(chan struct{})
 
 	if client {
 		s.nextStreamID = 1
@@ -79,8 +105,12 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	return s
 }
 
-// OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
+	return s.OpenStreamOpt(100)
+}
+
+// OpenStream is used to create a new stream
+func (s *Session) OpenStreamOpt(niceness uint8) (*Stream, error) {
 	if s.IsClosed() {
 		return nil, errors.New(errBrokenPipe)
 	}
@@ -101,9 +131,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 	s.nextStreamIDLock.Unlock()
 
-	stream := newStream(sid, s.config.MaxFrameSize, s)
+	stream := newStream(sid, niceness, s.config.MaxFrameSize, int32(s.config.MaxPerStreamReceiveBuffer), s)
 
-	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
+	if _, err := s.writeFrame(0, newFrame(cmdSYN, sid)); err != nil {
 		return nil, errors.Wrap(err, "writeFrame")
 	}
 
@@ -113,9 +143,13 @@ func (s *Session) OpenStream() (*Stream, error) {
 	return stream, nil
 }
 
+func (s *Session) AcceptStream() (*Stream, error) {
+	return s.AcceptStreamOpt(100)
+}
+
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
-func (s *Session) AcceptStream() (*Stream, error) {
+func (s *Session) AcceptStreamOpt(niceness uint8) (*Stream, error) {
 	var deadline <-chan time.Time
 	if d, ok := s.deadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(time.Until(d))
@@ -124,6 +158,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 	select {
 	case stream := <-s.chAccepts:
+		stream.niceness = niceness
 		return stream, nil
 	case <-deadline:
 		return nil, errTimeout
@@ -148,16 +183,7 @@ func (s *Session) Close() (err error) {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		s.notifyBucket()
 		return s.conn.Close()
-	}
-}
-
-// notifyBucket notifies recvLoop that bucket is available
-func (s *Session) notifyBucket() {
-	select {
-	case s.bucketNotify <- struct{}{}:
-	default:
 	}
 }
 
@@ -191,20 +217,15 @@ func (s *Session) SetDeadline(t time.Time) error {
 // notify the session that a stream has closed
 func (s *Session) streamClosed(sid uint32) {
 	s.streamLock.Lock()
-	if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-			s.notifyBucket()
-		}
-	}
 	delete(s.streams, sid)
 	s.streamLock.Unlock()
 }
 
-// returnTokens is called by stream to return token after read
-func (s *Session) returnTokens(n int) {
-	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-		s.notifyBucket()
-	}
+func (s *Session) queueAcks(streamId uint32, n int32) {
+	ack := newFrame(cmdACK, streamId)
+	ack.data = make([]byte, 4)
+	binary.BigEndian.PutUint32(ack.data, uint32(n))
+	s.queueFrame(0, ack)
 }
 
 // session read a frame from underlying connection
@@ -235,10 +256,6 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 func (s *Session) recvLoop() {
 	buffer := make([]byte, (1<<16)+headerSize)
 	for {
-		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
-			<-s.bucketNotify
-		}
-
 		if f, err := s.readFrame(buffer); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
 
@@ -247,7 +264,7 @@ func (s *Session) recvLoop() {
 			case cmdSYN:
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
-					stream := newStream(f.sid, s.config.MaxFrameSize, s)
+					stream := newStream(f.sid, 255, s.config.MaxFrameSize, int32(s.config.MaxPerStreamReceiveBuffer), s)
 					s.streams[f.sid] = stream
 					select {
 					case s.chAccepts <- stream:
@@ -265,9 +282,15 @@ func (s *Session) recvLoop() {
 			case cmdPSH:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
-					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					stream.pushBytes(f.data)
 					stream.notifyReadEvent()
+				}
+				s.streamLock.Unlock()
+			case cmdACK:
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					tokens := binary.BigEndian.Uint32(f.data)
+					stream.receiveAck(int32(tokens))
 				}
 				s.streamLock.Unlock()
 			default:
@@ -289,8 +312,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrame(newFrame(cmdNOP, 0))
-			s.notifyBucket() // force a signal to the recvLoop
+			s.writeFrame(0, newFrame(cmdNOP, 0))
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
@@ -308,7 +330,11 @@ func (s *Session) sendLoop() {
 		select {
 		case <-s.die:
 			return
-		case request := <-s.writes:
+		case <-s.writeTicket:
+			s.writesLock.Lock()
+			request := heap.Pop(&s.writes).(writeRequest)
+			s.writesLock.Unlock()
+
 			buf[0] = request.frame.ver
 			buf[1] = request.frame.cmd
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
@@ -332,19 +358,31 @@ func (s *Session) sendLoop() {
 	}
 }
 
-// writeFrame writes the frame to the underlying connection
-// and returns the number of bytes written if successful
-func (s *Session) writeFrame(f Frame) (n int, err error) {
+func (s *Session) queueFrame(niceness uint8, f Frame) (writeRequest, error) {
 	req := writeRequest{
-		frame:  f,
-		result: make(chan writeResult, 1),
+		niceness: niceness,
+		sequence: atomic.AddUint64(&s.writeSequenceNum, 1),
+		frame:    f,
+		result:   make(chan writeResult, 1),
 	}
+	s.writesLock.Lock()
+	heap.Push(&s.writes, req)
+	s.writesLock.Unlock()
 	select {
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
-	case s.writes <- req:
+		return req, errors.New(errBrokenPipe)
+	case s.writeTicket <- struct{}{}:
 	}
+	return req, nil
+}
 
+// writeFrame writes the frame to the underlying connection
+// and returns the number of bytes written if successful
+func (s *Session) writeFrame(niceness uint8, f Frame) (n int, err error) {
+	req, err := s.queueFrame(niceness, f)
+	if err != nil {
+		return 0, err
+	}
 	result := <-req.result
 	return result.n, result.err
 }

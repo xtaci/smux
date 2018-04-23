@@ -9,31 +9,38 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"container/heap"
 )
 
 // Stream implements net.Conn
 type Stream struct {
-	id            uint32
-	rstflag       int32
-	sess          *Session
-	buffer        bytes.Buffer
-	bufferLock    sync.Mutex
-	frameSize     int
-	chReadEvent   chan struct{} // notify a read event
-	die           chan struct{} // flag the stream has closed
-	dieLock       sync.Mutex
-	readDeadline  atomic.Value
-	writeDeadline atomic.Value
+	id                     uint32
+	niceness               uint8
+	rstflag                int32
+	sess                   *Session
+	buffer                 bytes.Buffer
+	bufferLock             sync.Mutex
+	frameSize              int
+	chReadEvent            chan struct{} // notify a read event
+	die                    chan struct{} // flag the stream has closed
+	dieLock                sync.Mutex
+	readDeadline           atomic.Value
+	writeDeadline          atomic.Value
+	writeTokenBucket       int32         // write tokens required for writing to the sessions
+	writeTokenBucketNotify chan struct{} // used for waiting for tokens
 }
 
 // newStream initiates a Stream struct
-func newStream(id uint32, frameSize int, sess *Session) *Stream {
+func newStream(id uint32, niceness uint8, frameSize int, writeTokenBucketSize int32, sess *Session) *Stream {
 	s := new(Stream)
+	s.niceness = niceness
 	s.id = id
 	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
+	s.writeTokenBucket = writeTokenBucketSize
+	s.writeTokenBucketNotify = make(chan struct{}, 1)
 	return s
 }
 
@@ -66,7 +73,7 @@ READ:
 	s.bufferLock.Unlock()
 
 	if n > 0 {
-		s.sess.returnTokens(n)
+		s.sess.queueAcks(s.id, int32(n))
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
@@ -101,13 +108,31 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	frames := s.split(b, cmdPSH, s.id)
 	sent := 0
 	for k := range frames {
-		req := writeRequest{
-			frame:  frames[k],
-			result: make(chan writeResult, 1),
+		for atomic.LoadInt32(&s.writeTokenBucket) <= 0 {
+			select {
+			case <-s.writeTokenBucketNotify:
+			case <-s.die:
+				return sent, errors.New(errBrokenPipe)
+			case <-deadline:
+				return sent, errTimeout
+			}
 		}
 
+		atomic.AddInt32(&s.writeTokenBucket, -int32(len(frames[k].data)))
+
+		req := writeRequest{
+			niceness: s.niceness,
+			sequence: atomic.AddUint64(&s.sess.writeSequenceNum, 1),
+			frame:    frames[k],
+			result:   make(chan writeResult, 1),
+		}
+
+		// TODO(jnewman): replace with session.writeFrame(..)?
+		s.sess.writesLock.Lock()
+		heap.Push(&s.sess.writes, req)
+		s.sess.writesLock.Unlock()
 		select {
-		case s.sess.writes <- req:
+		case s.sess.writeTicket <- struct{}{}:
 		case <-s.die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
@@ -141,7 +166,7 @@ func (s *Stream) Close() error {
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
-		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		_, err := s.sess.writeFrame(0, newFrame(cmdFIN, s.id))
 		return err
 	}
 }
@@ -214,13 +239,19 @@ func (s *Stream) pushBytes(p []byte) {
 	s.bufferLock.Unlock()
 }
 
-// recycleTokens transform remaining bytes to tokens(will truncate buffer)
-func (s *Stream) recycleTokens() (n int) {
-	s.bufferLock.Lock()
-	n = s.buffer.Len()
-	s.buffer.Reset()
-	s.bufferLock.Unlock()
-	return
+// receiveAck replenishes the token writeTokenBucket so that more writes can proceed
+func (s *Stream) receiveAck(numTokens int32) {
+	if atomic.AddInt32(&s.writeTokenBucket, numTokens) > 0 {
+		s.notifyBucket()
+	}
+}
+
+// notifyBucket notifies waiting write loops that there are more tokens in the writeTokenBucket
+func (s *Stream) notifyBucket() {
+	select {
+	case s.writeTokenBucketNotify <- struct{}{}:
+	default:
+	}
 }
 
 // split large byte buffer into smaller frames, reference only
