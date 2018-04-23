@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"container/heap"
 )
 
 // Stream implements net.Conn
 type Stream struct {
 	id            uint32
+	niceness      uint8
 	rstflag       int32
 	sess          *Session
 	buffer        bytes.Buffer
@@ -27,8 +29,9 @@ type Stream struct {
 }
 
 // newStream initiates a Stream struct
-func newStream(id uint32, frameSize int, sess *Session) *Stream {
+func newStream(id uint32, niceness uint8, frameSize int, sess *Session) *Stream {
 	s := new(Stream)
+	s.niceness = niceness
 	s.id = id
 	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
@@ -102,12 +105,18 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	sent := 0
 	for k := range frames {
 		req := writeRequest{
-			frame:  frames[k],
-			result: make(chan writeResult, 1),
+			niceness: s.niceness,
+			sequence: atomic.AddUint64(&s.sess.writeSequenceNum, 1),
+			frame:    frames[k],
+			result:   make(chan writeResult, 1),
 		}
 
+		// TODO(jnewman): replace with session.writeFrame(..)?
+		s.sess.writesLock.Lock()
+		heap.Push(&s.sess.writes, req)
+		s.sess.writesLock.Unlock()
 		select {
-		case s.sess.writes <- req:
+		case s.sess.writeTicket <- struct{}{}:
 		case <-s.die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
@@ -141,7 +150,7 @@ func (s *Stream) Close() error {
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
-		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		_, err := s.sess.writeFrame(0, newFrame(cmdFIN, s.id))
 		return err
 	}
 }
