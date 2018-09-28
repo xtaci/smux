@@ -210,30 +210,30 @@ func (s *Session) returnTokens(n int) {
 // session read a frame from underlying connection
 // it's data is pointed to the input buffer
 func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
-	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
+	var hdr rawHeader
+	if _, err := io.ReadFull(s.conn, hdr[:]); err != nil {
 		return f, errors.Wrap(err, "readFrame")
 	}
 
-	dec := rawHeader(buffer)
-	if dec.Version() != version {
+	if hdr.Version() != version {
 		return f, errors.New(errInvalidProtocol)
 	}
 
-	f.ver = dec.Version()
-	f.cmd = dec.Cmd()
-	f.sid = dec.StreamID()
-	if length := dec.Length(); length > 0 {
-		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
+	f.ver = hdr.Version()
+	f.cmd = hdr.Cmd()
+	f.sid = hdr.StreamID()
+	if length := hdr.Length(); length > 0 {
+		f.data = buffer[:length]
+		if _, err := io.ReadFull(s.conn, f.data); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
-		f.data = buffer[headerSize : headerSize+length]
 	}
 	return f, nil
 }
 
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
-	buffer := make([]byte, (1<<16)+headerSize)
+	buffer := make([]byte, 1<<16)
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
 			<-s.bucketNotify

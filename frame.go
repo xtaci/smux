@@ -36,7 +36,7 @@ func newFrame(cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 
-type rawHeader []byte
+type rawHeader [headerSize]byte
 
 func (h rawHeader) Version() byte {
 	return h[0]

@@ -523,7 +523,6 @@ func TestRandomFrame(t *testing.T) {
 	copy(buf[headerSize:], f.data)
 
 	session.conn.Write(buf)
-	t.Log(rawHeader(buf))
 	cli.Close()
 }
 
