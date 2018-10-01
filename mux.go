@@ -31,7 +31,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		KeepAliveInterval: 10 * time.Second,
 		KeepAliveTimeout:  30 * time.Second,
-		MaxFrameSize:      65535,
+		MaxFrameSize:      32768,
 		MaxReceiveBuffer:  4194304,
 	}
 }
