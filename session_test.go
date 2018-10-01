@@ -538,9 +538,7 @@ func TestReadDeadline(t *testing.T) {
 	buf := make([]byte, 10)
 	var readErr error
 	for i := 0; i < N; i++ {
-		msg := fmt.Sprintf("hello%v", i)
 		stream.SetReadDeadline(time.Now().Add(-1 * time.Minute))
-		stream.Write([]byte(msg))
 		if _, readErr = stream.Read(buf); readErr != nil {
 			break
 		}
