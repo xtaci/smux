@@ -340,6 +340,10 @@ func (s *Session) keepalive() {
 	}
 }
 
+func (s *Session) GetRTT() (time.Duration) {
+	return s.rtt
+}
+
 func (s *Session) sendLoop() {
 	buf := make([]byte, (1<<16)+headerSize)
 	for {
