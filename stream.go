@@ -20,7 +20,7 @@ type Stream struct {
 	bufferLock    sync.Mutex
 	frameSize     int
 	chReadEvent   chan struct{} // notify a read event
-	die           chan struct{} // flag the stream has closed
+	Die           chan struct{} // flag the stream has closed
 	dieLock       sync.Mutex
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
@@ -33,7 +33,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
-	s.die = make(chan struct{})
+	s.Die = make(chan struct{})
 	return s
 }
 
@@ -46,7 +46,7 @@ func (s *Stream) ID() uint32 {
 func (s *Stream) Read(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		select {
-		case <-s.die:
+		case <-s.Die:
 			return 0, errors.New(errBrokenPipe)
 		default:
 			return 0, nil
@@ -78,7 +78,7 @@ READ:
 		goto READ
 	case <-deadline:
 		return n, errTimeout
-	case <-s.die:
+	case <-s.Die:
 		return 0, errors.New(errBrokenPipe)
 	}
 }
@@ -93,7 +93,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	select {
-	case <-s.die:
+	case <-s.Die:
 		return 0, errors.New(errBrokenPipe)
 	default:
 	}
@@ -108,7 +108,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 		select {
 		case s.sess.writes <- req:
-		case <-s.die:
+		case <-s.Die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
 			return sent, errTimeout
@@ -120,7 +120,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 			if result.err != nil {
 				return sent, result.err
 			}
-		case <-s.die:
+		case <-s.Die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
 			return sent, errTimeout
@@ -134,11 +134,11 @@ func (s *Stream) Close() error {
 	s.dieLock.Lock()
 
 	select {
-	case <-s.die:
+	case <-s.Die:
 		s.dieLock.Unlock()
 		return errors.New(errBrokenPipe)
 	default:
-		close(s.die)
+		close(s.Die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
 		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
@@ -181,9 +181,9 @@ func (s *Stream) sessionClose() {
 	defer s.dieLock.Unlock()
 
 	select {
-	case <-s.die:
+	case <-s.Die:
 	default:
-		close(s.die)
+		close(s.Die)
 	}
 }
 
