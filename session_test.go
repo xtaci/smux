@@ -86,6 +86,23 @@ func TestEcho(t *testing.T) {
 	session.Close()
 }
 
+func TestGetDieCh(t *testing.T) {
+	cs, ss, err := getSmuxStreamPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	dieCh := ss.GetDieCh()
+	go func() {
+		select {
+		case <-dieCh:
+		case <-time.Tick(time.Second):
+			t.Fatal("wait die chan timeout")
+		}
+	}()
+	cs.Close()
+}
+
 func TestSpeed(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
