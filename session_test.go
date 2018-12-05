@@ -91,6 +91,7 @@ func TestGetDieCh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ss.Close()
 	dieCh := ss.GetDieCh()
 	go func() {
 		select {
