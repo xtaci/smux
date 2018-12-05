@@ -20,7 +20,7 @@ type Stream struct {
 	bufferLock    sync.Mutex
 	frameSize     int
 	chReadEvent   chan struct{} // notify a read event
-	Die           chan struct{} // flag the stream has closed
+	die           chan struct{} // flag the stream has closed
 	dieLock       sync.Mutex
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
@@ -33,7 +33,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
-	s.Die = make(chan struct{})
+	s.die = make(chan struct{})
 	return s
 }
 
@@ -46,7 +46,7 @@ func (s *Stream) ID() uint32 {
 func (s *Stream) Read(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		select {
-		case <-s.Die:
+		case <-s.die:
 			return 0, errors.New(errBrokenPipe)
 		default:
 			return 0, nil
@@ -78,7 +78,7 @@ READ:
 		goto READ
 	case <-deadline:
 		return n, errTimeout
-	case <-s.Die:
+	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
 	}
 }
@@ -93,7 +93,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	}
 
 	select {
-	case <-s.Die:
+	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
 	default:
 	}
@@ -108,7 +108,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 		select {
 		case s.sess.writes <- req:
-		case <-s.Die:
+		case <-s.die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
 			return sent, errTimeout
@@ -120,7 +120,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 			if result.err != nil {
 				return sent, result.err
 			}
-		case <-s.Die:
+		case <-s.die:
 			return sent, errors.New(errBrokenPipe)
 		case <-deadline:
 			return sent, errTimeout
@@ -134,16 +134,22 @@ func (s *Stream) Close() error {
 	s.dieLock.Lock()
 
 	select {
-	case <-s.Die:
+	case <-s.die:
 		s.dieLock.Unlock()
 		return errors.New(errBrokenPipe)
 	default:
-		close(s.Die)
+		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
 		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
 		return err
 	}
+}
+
+// GetDieCh returns a readonly chan which can be readable
+// when the stream is to be closed.
+func (s *Stream) GetDieCh() <-chan struct{} {
+	return s.die
 }
 
 // SetReadDeadline sets the read deadline as defined by
@@ -181,9 +187,9 @@ func (s *Stream) sessionClose() {
 	defer s.dieLock.Unlock()
 
 	select {
-	case <-s.Die:
+	case <-s.die:
 	default:
-		close(s.Die)
+		close(s.die)
 	}
 }
 
