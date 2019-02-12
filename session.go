@@ -289,7 +289,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrame(newFrame(cmdNOP, 0))
+			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -335,6 +335,11 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
+	return s.writeFrameInternal(f, nil)
+}
+
+// internal writeFrame version to support deadline used in keepalive
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, error) {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
@@ -343,8 +348,16 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	case <-s.die:
 		return 0, errors.New(errBrokenPipe)
 	case s.writes <- req:
+	case <-deadline:
+		return 0, errTimeout
 	}
 
-	result := <-req.result
-	return result.n, result.err
+	select {
+	case result := <-req.result:
+		return result.n, result.err
+	case <-deadline:
+		return 0, errTimeout
+	case <-s.die:
+		return 0, errors.New(errBrokenPipe)
+	}
 }

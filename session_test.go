@@ -304,6 +304,44 @@ func TestKeepAliveTimeout(t *testing.T) {
 	}
 }
 
+type blockWriteConn struct {
+	net.Conn
+}
+
+func (c *blockWriteConn) Write(b []byte) (n int, err error) {
+	forever := time.Hour * 24
+	time.Sleep(forever)
+	return c.Conn.Write(b)
+}
+
+func TestKeepAliveBlockWriteTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		ln.Accept()
+	}()
+
+	cli, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	//when writeFrame block, keepalive in old version never timeout
+	blockWriteCli := &blockWriteConn{cli}
+
+	config := DefaultConfig()
+	config.KeepAliveInterval = time.Second
+	config.KeepAliveTimeout = 2 * time.Second
+	session, _ := Client(blockWriteCli, config)
+	time.Sleep(3 * time.Second)
+	if !session.IsClosed() {
+		t.Fatal("keepalive-timeout failed")
+	}
+}
+
 func TestServerEcho(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -541,6 +579,95 @@ func TestRandomFrame(t *testing.T) {
 
 	session.conn.Write(buf)
 	cli.Close()
+
+	// writeFrame after die
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	//close first
+	session.Close()
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		session.writeFrame(f)
+	}
+}
+
+func TestWriteFrameInternal(t *testing.T) {
+	addr, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	// pure random
+	session, _ := Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		rnd := make([]byte, rand.Uint32()%1024)
+		io.ReadFull(crand.Reader, rnd)
+		session.conn.Write(rnd)
+	}
+	cli.Close()
+
+	// writeFrame after die
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	//close first
+	session.Close()
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout))
+	}
+
+	// random cmds
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout))
+	}
+	//deadline occur
+	{
+		c := make(chan time.Time)
+		close(c)
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		_, err := session.writeFrameInternal(f, c)
+		if err != errTimeout {
+			t.Fatal("write frame with deadline failed", err)
+		}
+	}
+	cli.Close()
+
+	{
+		cli, err = net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := DefaultConfig()
+		config.KeepAliveInterval = time.Second
+		config.KeepAliveTimeout = 2 * time.Second
+		session, _ = Client(&blockWriteConn{cli}, config)
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		c := make(chan time.Time)
+		go func() {
+			//die first, deadline second, better for coverage
+			time.Sleep(time.Second)
+			session.Close()
+			time.Sleep(time.Second)
+			close(c)
+		}()
+		_, err = session.writeFrameInternal(f, c)
+		if err.Error() != errBrokenPipe {
+			t.Fatal("write frame with deadline failed", err)
+		}
+	}
 }
 
 func TestReadDeadline(t *testing.T) {
