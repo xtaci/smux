@@ -645,6 +645,29 @@ func TestDeadlineFrame(t *testing.T) {
 	}
 	cli.Close()
 
+	{
+		cli, err = net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := DefaultConfig()
+		config.KeepAliveInterval = time.Second
+		config.KeepAliveTimeout = 2 * time.Second
+		session, _ = Client(&blockWriteConn{cli}, config)
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		c := make(chan time.Time)
+		go func() {
+			//die first, deadline second, better for coverage
+			time.Sleep(time.Second)
+			session.Close()
+			time.Sleep(time.Second)
+			close(c)
+		}()
+		_, err = session.writeFrameWithDeadline(f, c)
+		if err.Error() != errBrokenPipe {
+			t.Fatal("write frame with deadline failed", err)
+		}
+	}
 }
 
 func TestReadDeadline(t *testing.T) {
