@@ -341,22 +341,7 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	req := writeRequest{
-		frame:  f,
-		result: make(chan writeResult, 1),
-	}
-	select {
-	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
-	case s.writes <- req:
-	}
-
-	select {
-	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
-	case result := <-req.result:
-		return result.n, result.err
-	}
+	return s.writeFrameWithDeadline(f, nil)
 }
 
 // writeFrame may block forever in keepalive function, then it never timeout
