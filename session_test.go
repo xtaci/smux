@@ -278,16 +278,6 @@ func TestIsClose(t *testing.T) {
 	}
 }
 
-type blockWriteConn struct {
-	net.Conn
-}
-
-func (c *blockWriteConn) Write(b []byte) (n int, err error) {
-	forever := time.Hour * 24
-	time.Sleep(forever)
-	return c.Conn.Write(b)
-}
-
 func TestKeepAliveTimeout(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -312,6 +302,16 @@ func TestKeepAliveTimeout(t *testing.T) {
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}
+}
+
+type blockWriteConn struct {
+	net.Conn
+}
+
+func (c *blockWriteConn) Write(b []byte) (n int, err error) {
+	forever := time.Hour * 24
+	time.Sleep(forever)
+	return c.Conn.Write(b)
 }
 
 func TestKeepAliveBlockWriteTimeout(t *testing.T) {
@@ -579,6 +579,19 @@ func TestRandomFrame(t *testing.T) {
 
 	session.conn.Write(buf)
 	cli.Close()
+
+	// writeFrame after die
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	//close first
+	session.Close()
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		session.writeFrame(f)
+	}
 }
 
 func TestDeadlineFrame(t *testing.T) {
@@ -595,6 +608,19 @@ func TestDeadlineFrame(t *testing.T) {
 		session.conn.Write(rnd)
 	}
 	cli.Close()
+
+	// writeFrame after die
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ = Client(cli, nil)
+	//close first
+	session.Close()
+	for i := 0; i < 100; i++ {
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
+		session.writeFrameWithDeadline(f, time.After(session.config.KeepAliveTimeout))
+	}
 
 	// random cmds, writeFrameWithDeadline only used in keepalive with cmd of cmdNOP
 	cli, err = net.Dial("tcp", addr)
@@ -618,6 +644,7 @@ func TestDeadlineFrame(t *testing.T) {
 		}
 	}
 	cli.Close()
+
 }
 
 func TestReadDeadline(t *testing.T) {
