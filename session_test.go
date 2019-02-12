@@ -594,7 +594,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 }
 
-func TestDeadlineFrame(t *testing.T) {
+func TestWriteFrameInternal(t *testing.T) {
 	addr, stop, cli, err := setupServer(t)
 	if err != nil {
 		t.Fatal(err)
@@ -619,10 +619,10 @@ func TestDeadlineFrame(t *testing.T) {
 	session.Close()
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		session.writeFrameWithDeadline(f, time.After(session.config.KeepAliveTimeout))
+		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout))
 	}
 
-	// random cmds, writeFrameWithDeadline only used in keepalive with cmd of cmdNOP
+	// random cmds
 	cli, err = net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -631,14 +631,14 @@ func TestDeadlineFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		session.writeFrameWithDeadline(f, time.After(session.config.KeepAliveTimeout))
+		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout))
 	}
 	//deadline occur
 	{
 		c := make(chan time.Time)
 		close(c)
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		_, err := session.writeFrameWithDeadline(f, c)
+		_, err := session.writeFrameInternal(f, c)
 		if err != errTimeout {
 			t.Fatal("write frame with deadline failed", err)
 		}
@@ -663,7 +663,7 @@ func TestDeadlineFrame(t *testing.T) {
 			time.Sleep(time.Second)
 			close(c)
 		}()
-		_, err = session.writeFrameWithDeadline(f, c)
+		_, err = session.writeFrameInternal(f, c)
 		if err.Error() != errBrokenPipe {
 			t.Fatal("write frame with deadline failed", err)
 		}

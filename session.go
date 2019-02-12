@@ -289,7 +289,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			_, err := s.writeFrameWithDeadline(newFrame(cmdNOP, 0), tickerTimeout.C)
+			_, err := s.writeFrameInternal(newFrame(cmdNOP, 0), tickerTimeout.C)
 			if err == errTimeout {
 				if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 					s.Close()
@@ -341,12 +341,11 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameWithDeadline(f, nil)
+	return s.writeFrameInternal(f, nil)
 }
 
-// writeFrame may block forever in keepalive function, then it never timeout
-// so set a deadline to writeFrame only used in keepalive
-func (s *Session) writeFrameWithDeadline(f Frame, deadline <-chan time.Time) (int, error) {
+// internal writeFrame version to support deadline used in keepalive
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, error) {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
