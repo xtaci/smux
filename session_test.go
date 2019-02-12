@@ -278,6 +278,16 @@ func TestIsClose(t *testing.T) {
 	}
 }
 
+type blockWriteConn struct {
+	net.Conn
+}
+
+func (c *blockWriteConn) Write(b []byte) (n int, err error) {
+	forever := time.Hour * 24
+	time.Sleep(forever)
+	return c.Conn.Write(b)
+}
+
 func TestKeepAliveTimeout(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -298,6 +308,34 @@ func TestKeepAliveTimeout(t *testing.T) {
 	config.KeepAliveInterval = time.Second
 	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(cli, config)
+	time.Sleep(3 * time.Second)
+	if !session.IsClosed() {
+		t.Fatal("keepalive-timeout failed")
+	}
+}
+
+func TestKeepAliveBlockWriteTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		ln.Accept()
+	}()
+
+	cli, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	//when writeFrame block, keepalive in old version never timeout
+	blockWriteCli := &blockWriteConn{cli}
+
+	config := DefaultConfig()
+	config.KeepAliveInterval = time.Second
+	config.KeepAliveTimeout = 2 * time.Second
+	session, _ := Client(blockWriteCli, config)
 	time.Sleep(3 * time.Second)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
@@ -540,6 +578,45 @@ func TestRandomFrame(t *testing.T) {
 	copy(buf[headerSize:], f.data)
 
 	session.conn.Write(buf)
+	cli.Close()
+}
+
+func TestDeadlineFrame(t *testing.T) {
+	addr, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	// pure random
+	session, _ := Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		rnd := make([]byte, rand.Uint32()%1024)
+		io.ReadFull(crand.Reader, rnd)
+		session.conn.Write(rnd)
+	}
+	cli.Close()
+
+	// random cmds, writeFrameWithDeadline only used in keepalive with cmd of cmdNOP
+	cli, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
+	session, _ = Client(cli, nil)
+	for i := 0; i < 100; i++ {
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		session.writeFrameWithDeadline(f, time.After(session.config.KeepAliveTimeout))
+	}
+	//deadline occur
+	{
+		c := make(chan time.Time)
+		close(c)
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		_, err := session.writeFrameWithDeadline(f, c)
+		if err != errTimeout {
+			t.Fatal("write frame with deadline failed", err)
+		}
+	}
 	cli.Close()
 }
 

@@ -359,8 +359,8 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	}
 }
 
-//writeFrame may block forever in keepalive function, then it never timeout
-//so set a deadline to writeFrame that used in keepalive
+// writeFrame may block forever in keepalive function, then it never timeout
+// so set a deadline to writeFrame only used in keepalive
 func (s *Session) writeFrameWithDeadline(f Frame, deadline <-chan time.Time) (int, error) {
 	req := writeRequest{
 		frame:  f,
