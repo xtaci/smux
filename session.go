@@ -289,7 +289,13 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrame(newFrame(cmdNOP, 0))
+			_, err := s.writeFrameWithDeadline(newFrame(cmdNOP, 0), tickerTimeout.C)
+			if err == errTimeout {
+				if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
+					s.Close()
+					return
+				}
+			}
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -345,6 +351,35 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 	case s.writes <- req:
 	}
 
-	result := <-req.result
-	return result.n, result.err
+	select {
+	case <-s.die:
+		return 0, errors.New(errBrokenPipe)
+	case result := <-req.result:
+		return result.n, result.err
+	}
+}
+
+//writeFrame may block forever in keepalive function, then it never timeout
+//so set a deadline to writeFrame that used in keepalive
+func (s *Session) writeFrameWithDeadline(f Frame, deadline <-chan time.Time) (int, error) {
+	req := writeRequest{
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case <-s.die:
+		return 0, errors.New(errBrokenPipe)
+	case s.writes <- req:
+	case <-deadline:
+		return 0, errTimeout
+	}
+
+	select {
+	case result := <-req.result:
+		return result.n, result.err
+	case <-deadline:
+		return 0, errTimeout
+	case <-s.die:
+		return 0, errors.New(errBrokenPipe)
+	}
 }
