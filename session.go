@@ -289,13 +289,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			_, err := s.writeFrameInternal(newFrame(cmdNOP, 0), tickerTimeout.C)
-			if err == errTimeout {
-				if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
-					s.Close()
-					return
-				}
-			}
+			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
