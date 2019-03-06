@@ -132,7 +132,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 func (s *Session) AcceptStream() (*Stream, error) {
 	var deadline <-chan time.Time
 	if d, ok := s.deadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(d.Sub(time.Now()))
+		timer := time.NewTimer(time.Until(d))
 		defer timer.Stop()
 		deadline = timer.C
 	}
@@ -224,30 +224,30 @@ func (s *Session) returnTokens(n int) {
 // session read a frame from underlying connection
 // it's data is pointed to the input buffer
 func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
-	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
+	var hdr rawHeader
+	if _, err := io.ReadFull(s.conn, hdr[:]); err != nil {
 		return f, errors.New("readFrame: " + err.Error())
 	}
 
-	dec := rawHeader(buffer)
-	if dec.Version() != version {
+	if hdr.Version() != version {
 		return f, ErrInvalidProtocol
 	}
 
-	f.ver = dec.Version()
-	f.cmd = dec.Cmd()
-	f.sid = dec.StreamID()
-	if length := dec.Length(); length > 0 {
-		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
+	f.ver = hdr.Version()
+	f.cmd = hdr.Cmd()
+	f.sid = hdr.StreamID()
+	if length := hdr.Length(); length > 0 {
+		f.data = buffer[:length]
+		if _, err := io.ReadFull(s.conn, f.data); err != nil {
 			return f, errors.New("readFrame: " + err.Error())
 		}
-		f.data = buffer[headerSize : headerSize+length]
 	}
 	return f, nil
 }
 
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
-	buffer := make([]byte, (1<<16)+headerSize)
+	buffer := make([]byte, 1<<16)
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
 			<-s.bucketNotify
@@ -320,14 +320,18 @@ func (s *Session) keepalive() {
 	defer tickerPing.Stop()
 	defer tickerTimeout.Stop()
 
-	s.rttTest = time.Now()
-	s.writeFrame(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+	/*s.rttTest = time.Now()
+	_, err := s.writeFrameInternal(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), tickerPing.C)
+	if err != nil {
+		s.Close()
+		return
+	}*/
 
 	for {
 		select {
 		case <-tickerPing.C:
 			s.rttTest = time.Now()
-			s.writeFrame(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+			s.writeFrameInternal(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), tickerPing.C)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -350,10 +354,7 @@ func (s *Session) sendLoop() {
 		select {
 		case <-s.die:
 			return
-		case request, ok := <-s.writes:
-			if !ok {
-				continue
-			}
+		case request := <-s.writes:
 			buf[0] = request.frame.ver
 			buf[1] = request.frame.cmd
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
@@ -380,29 +381,43 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	req := writeRequest{
-		frame:  f,
-		result: make(chan writeResult, 1),
-	}
-	select {
-	case <-s.die:
-		return 0, ErrBrokenPipe
-	case s.writes <- req:
+	return s.writeFrameInternal(f, nil)
+}
+
+// internal writeFrame version to support deadline used in keepalive
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, error) {
+	req, err := s.writeFrameHalf(f, deadline)
+	if err != nil {
+		return 0, err
 	}
 
-	result := <-req.result
-	return result.n, result.err
+	select {
+	case result := <-req.result:
+		return result.n, result.err
+	case <-deadline:
+		return 0, errTimeout
+	case <-s.die:
+		return 0, ErrBrokenPipe
+	}
 }
 
 func (s *Session) writeFrameNRet(f Frame) {
+	s.writeFrameHalf(f, nil)
+}
+
+func (s *Session) writeFrameHalf(f Frame, deadline <-chan time.Time) (*writeRequest, error) {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
 	}
 	select {
 	case <-s.die:
+		return nil, ErrBrokenPipe
 	case s.writes <- req:
+	case <-deadline:
+		return nil, errTimeout
 	}
+	return &req, nil
 }
 
 func (s *Session) WriteCustomCMD(cmd byte, bts []byte) (n int, err error) {

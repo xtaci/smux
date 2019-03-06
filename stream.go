@@ -73,7 +73,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 	var deadline <-chan time.Time
 	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(d.Sub(time.Now()))
+		timer := time.NewTimer(time.Until(d))
 		defer timer.Stop()
 		deadline = timer.C
 	}
@@ -109,7 +109,7 @@ READ:
 func (s *Stream) Write(b []byte) (n int, err error) {
 	var deadline <-chan time.Time
 	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(d.Sub(time.Now()))
+		timer := time.NewTimer(time.Until(d))
 		defer timer.Stop()
 		deadline = timer.C
 	}
@@ -179,6 +179,12 @@ func (s *Stream) Close() error {
 		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
 		return err
 	}
+}
+
+// GetDieCh returns a readonly chan which can be readable
+// when the stream is to be closed.
+func (s *Stream) GetDieCh() <-chan struct{} {
+	return s.die
 }
 
 // SetReadDeadline sets the read deadline as defined by
@@ -356,7 +362,7 @@ func (s *Stream) sendPause() {
 	if s.empflag == 1 {
 		s.empflag = 0
 		s.empflagLock.Unlock()
-		s.sess.writeFrame(newFrame(cmdFUL, s.id))
+		s.sess.writeFrameNRet(newFrame(cmdFUL, s.id))
 		return
 	}
 	s.empflagLock.Unlock()
@@ -368,7 +374,7 @@ func (s *Stream) sendResume() {
 	if s.empflag == 0 {
 		s.empflag = 1
 		s.empflagLock.Unlock()
-		s.sess.writeFrame(newFrame(cmdEMP, s.id))
+		s.sess.writeFrameNRet(newFrame(cmdEMP, s.id))
 		return
 	}
 	s.empflagLock.Unlock()

@@ -40,7 +40,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		KeepAliveInterval:  2 * time.Second,
 		KeepAliveTimeout:   30 * time.Second,
-		MaxFrameSize:       4096,
+		MaxFrameSize:       32768,
 		MaxReceiveBuffer:   16 * 1024 * 1024,
 		EnableStreamBuffer: true,
 		MaxStreamBuffer:    8 * 1024 * 1024,
