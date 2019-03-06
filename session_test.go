@@ -7,11 +7,23 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
+	//"runtime"
+	"runtime/pprof"
+	"bytes"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func init() {
+	go func() {
+		http.ListenAndServe("localhost:6060", nil)
+	}()
+}
 
 // setupServer starts new server listening on a random localhost port and
 // returns address of the server, function to stop the server, new client
@@ -36,6 +48,12 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 		return "", nil, nil, err
 	}
 	return ln.Addr().String(), func() { ln.Close() }, conn, nil
+}
+
+func setupServerPipe(tb testing.TB) (addr string, stopfunc func(), client net.Conn, err error) {
+	ln, conn := net.Pipe()
+	go handleConnection(ln)
+	return "", func() { ln.Close() }, conn, nil
 }
 
 func handleConnection(conn net.Conn) {
@@ -91,6 +109,15 @@ func TestGetDieCh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testGetDieCh(t, cs, ss)
+}
+
+func TestGetDieCh2(t *testing.T) {
+	cs, ss, _ := getSmuxStreamPair()
+	testGetDieCh(t, cs, ss)
+}
+
+func testGetDieCh(t *testing.T, cs, ss *Stream) {
 	defer ss.Close()
 	dieCh := ss.GetDieCh()
 	go func() {
@@ -109,6 +136,19 @@ func TestSpeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	testSpeed(t, cli)
+}
+
+func TestSpeed2(t *testing.T) {
+	_, stop, cli, err := setupServerPipe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	testSpeed(t, cli)
+}
+
+func testSpeed(t *testing.T, cli net.Conn) {
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	t.Log(stream.LocalAddr(), stream.RemoteAddr())
@@ -149,10 +189,24 @@ func TestParallel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	testParallel(t, cli)
+}
+
+func TestParallel2(t *testing.T) {
+	_, stop, cli, err := setupServerPipe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	testParallel(t, cli)
+}
+
+func testParallel(t *testing.T, cli net.Conn) {
 	session, _ := Client(cli, nil)
 
 	par := 1000
 	messages := 100
+	die := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(par)
 	for i := 0; i < par; i++ {
@@ -166,11 +220,13 @@ func TestParallel(t *testing.T) {
 					break
 				}
 			}
+			<-die
 			s.Close()
 			wg.Done()
 		}(stream)
 	}
 	t.Log("created", session.NumStreams(), "streams")
+	close(die)
 	wg.Wait()
 	session.Close()
 }
@@ -235,6 +291,28 @@ func TestTinyReadBuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	testTinyReadBuffer(t, cli)
+}
+
+func TestTinyReadBuffer2(t *testing.T) {
+	_, stop, cli, err := setupServerPipe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	testTinyReadBuffer(t, cli)
+}
+
+func TestTinyReadBuffer3(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	go handleConnection(srv)
+	testTinyReadBuffer(t, cli)
+}
+
+func testTinyReadBuffer(t *testing.T, cli net.Conn) {
+	defer cli.Close()
+
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	const N = 100
@@ -287,6 +365,7 @@ func TestKeepAliveTimeout(t *testing.T) {
 	go func() {
 		ln.Accept()
 	}()
+	defer ln.Close()
 
 	cli, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
@@ -294,6 +373,27 @@ func TestKeepAliveTimeout(t *testing.T) {
 	}
 	defer cli.Close()
 
+	testKeepAliveTimeout(t, cli)
+}
+
+func TestKeepAliveTimeout2(t *testing.T) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveTimeout(t, c1)
+}
+
+func TestKeepAliveTimeout3(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveTimeout(t, c1)
+}
+
+func testKeepAliveTimeout(t *testing.T, cli net.Conn) {
 	config := DefaultConfig()
 	config.KeepAliveInterval = time.Second
 	config.KeepAliveTimeout = 2 * time.Second
@@ -329,6 +429,27 @@ func TestKeepAliveBlockWriteTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cli.Close()
+	testKeepAliveBlockWriteTimeout(t, cli)
+}
+
+func TestKeepAliveBlockWriteTimeout2(t *testing.T) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveBlockWriteTimeout(t, c1)
+}
+
+func TestKeepAliveBlockWriteTimeout3(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveBlockWriteTimeout(t, c1)
+}
+
+func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	//when writeFrame block, keepalive in old version never timeout
 	blockWriteCli := &blockWriteConn{cli}
 
@@ -337,6 +458,7 @@ func TestKeepAliveBlockWriteTimeout(t *testing.T) {
 	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(blockWriteCli, config)
 	time.Sleep(3 * time.Second)
+	//time.Sleep(time.Hour * 2)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}
@@ -406,6 +528,50 @@ func TestServerEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServerEcho2(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+
+	go func() {
+		 session, _ := Server(srv, nil)
+		 if stream, err := session.OpenStream(); err == nil {
+			  const N = 100
+			  buf := make([]byte, 10)
+			  for i := 0; i < N; i++ {
+				   msg := fmt.Sprintf("hello%v", i)
+				   stream.Write([]byte(msg))
+				   if n, err := stream.Read(buf); err != nil {
+					    t.Fatal(err)
+				   } else if string(buf[:n]) != msg {
+					    t.Fatal(err)
+				   }
+			  }
+			  stream.Close()
+		 } else {
+			  t.Fatal(err)
+		 }
+	}()
+
+	if session, err := Client(cli, nil); err == nil {
+		 if stream, err := session.AcceptStream(); err == nil {
+			  buf := make([]byte, 65536)
+			  for {
+				   n, err := stream.Read(buf)
+				   if err != nil {
+					    break
+				   }
+				   stream.Write(buf[:n])
+			  }
+		 } else {
+			  t.Fatal(err)
+		 }
+	} else {
+		 t.Fatal(err)
+	}
+}
+
 
 func TestSendWithoutRecv(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
@@ -499,6 +665,7 @@ func TestRandomFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+
 	// pure random
 	session, _ := Client(cli, nil)
 	for i := 0; i < 100; i++ {
@@ -600,6 +767,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+
 	// pure random
 	session, _ := Client(cli, nil)
 	for i := 0; i < 100; i++ {
@@ -676,6 +844,19 @@ func TestReadDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	testReadDeadline(t, cli)
+}
+
+func TestReadDeadline2(t *testing.T) {
+	_, stop, cli, err := setupServerPipe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	testReadDeadline(t, cli)
+}
+
+func testReadDeadline(t *testing.T, cli net.Conn) {
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	const N = 100
@@ -703,6 +884,19 @@ func TestWriteDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
+	testWriteDeadline(t, cli)
+}
+
+func TestWriteDeadline2(t *testing.T) {
+	_, stop, cli, err := setupServerPipe(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	testWriteDeadline(t, cli)
+}
+
+func testWriteDeadline(t *testing.T, cli net.Conn) {
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	buf := make([]byte, 10)
@@ -719,12 +913,197 @@ func TestWriteDeadline(t *testing.T) {
 	session.Close()
 }
 
+func TestSlowReadBlocking(t *testing.T) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+
+	testSlowReadBlocking(t, c1, c2)
+}
+
+func TestSlowReadBlocking2(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+
+	testSlowReadBlocking(t, srv, cli)
+}
+
+func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
+	//runtime.GOMAXPROCS(runtime.NumCPU() + 2)
+	config := &Config{
+		KeepAliveInterval:  10 * time.Second,
+		KeepAliveTimeout:   30 * time.Second,
+		MaxFrameSize:       4096,
+		MaxReceiveBuffer:   1 * 1024 * 1024,
+//		EnableStreamBuffer: true,
+//		MaxStreamBuffer:    16384,
+//		BoostTimeout:       100 * time.Millisecond,
+	}
+
+	go func (conn net.Conn) {
+		session, _ := Server(conn, config)
+		for {
+			if stream, err := session.AcceptStream(); err == nil {
+				go func(s io.ReadWriteCloser) {
+					buf := make([]byte, 1024 * 1024, 1024 * 1024)
+					for {
+						n, err := s.Read(buf)
+						if err != nil {
+							return
+						}
+//						t.Log("s1", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
+						s.Write(buf[:n])
+//						t.Log("s2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
+					}
+				}(stream)
+			} else {
+				return
+			}
+		}
+	}(srv)
+
+	session, _ := Client(cli, config)
+	startNotify := make(chan bool, 1)
+	flag := int32(1)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() { // fast write & slow read
+		defer wg.Done()
+
+		stream, err := session.OpenStream()
+		if err == nil {
+			t.Log("fast write stream start...")
+			defer func() {
+				stream.Close()
+				t.Log("fast write stream end...")
+			}()
+
+			const SIZE = 4 * 1024 // 4KB
+
+			var fwg sync.WaitGroup
+			fwg.Add(1)
+			go func() { // read = 4 * 2000 KB/s
+				defer fwg.Done()
+				rbuf := make([]byte, SIZE, SIZE)
+				for atomic.LoadInt32(&flag) > 0 {
+					stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+					if _, err := stream.Read(rbuf); err != nil {
+						if strings.Contains(err.Error(), "i/o timeout") {
+							//t.Logf("read block too long: %v", err)
+							continue
+						}
+						break
+					}
+					<- time.After(500 * time.Microsecond) // slow down read
+				}
+			}()
+
+			buf := make([]byte, SIZE, SIZE)
+			for i := range buf {
+				buf[i] = byte('-')
+			}
+			startNotify <- true
+			for atomic.LoadInt32(&flag) > 0 { // write = 4 * 10000 KB/s
+				stream.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+				_, err := stream.Write(buf)
+				if err != nil {
+					if strings.Contains(err.Error(), "i/o timeout") {
+						//t.Logf("write block too long: %v", err)
+						continue
+					}
+					break
+				}
+				<- time.After(100 * time.Microsecond) // slow down write
+//				t.Log("f2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+			}
+			fwg.Wait()
+
+		} else {
+			t.Fatal(err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() { // normal write
+		defer func() {
+			session.Close()
+			wg.Done()
+		}()
+
+		stream, err := session.OpenStream()
+		if err == nil {
+			t.Log("normal stream start...")
+			defer func() {
+				atomic.StoreInt32(&flag, int32(0))
+				//stream.Close()
+				t.Log("normal stream end...")
+			}()
+
+			const N = 25
+			buf := make([]byte, 12)
+			<- startNotify
+			for i := 0; i < N; i++ {
+				msg := fmt.Sprintf("hello%v", i)
+				start := time.Now()
+
+				stream.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+				_, err := stream.Write([]byte(msg))
+				if err != nil && strings.Contains(err.Error(), "i/o timeout") {
+					t.Log(stream.id, i, err,
+						"session.bucket", atomic.LoadInt32(&session.bucket))
+					//	"stream.bucket", atomic.LoadInt32(&stream.bucket),
+					//	"stream.empflag", atomic.LoadInt32(&stream.empflag), "stream.fulflag", atomic.LoadInt32(&stream.fulflag))
+					dumpGoroutine(t)
+					t.Fatal(err)
+					return
+				}
+
+				stream.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				if n, err := stream.Read(buf); err != nil {
+					t.Log(stream.id, i, err,
+						"session.bucket", atomic.LoadInt32(&session.bucket))
+					//	"stream.bucket", atomic.LoadInt32(&stream.bucket),
+					//	"stream.empflag", atomic.LoadInt32(&stream.empflag), "stream.fulflag", atomic.LoadInt32(&stream.fulflag))
+					dumpGoroutine(t)
+					t.Fatal(stream.id, i, err, "since start", time.Since(start))
+					return
+				} else if string(buf[:n]) != msg {
+					t.Fatal(err)
+				} else {
+					t.Log(stream.id, i, "time for normal stream rtt", time.Since(start))
+				}
+				<- time.After(200 * time.Millisecond)
+			}
+		} else {
+			t.Fatal(err)
+		}
+	}()
+	wg.Wait()
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer stop()
+	benchmarkAcceptClose(b, cli)
+}
+
+func BenchmarkAcceptClosePipe(b *testing.B) {
+	_, stop, cli, err := setupServerPipe(b)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer stop()
+	benchmarkAcceptClose(b, cli)
+}
+
+func benchmarkAcceptClose(b *testing.B, cli net.Conn) {
 	session, _ := Client(cli, nil)
 	for i := 0; i < b.N; i++ {
 		if stream, err := session.OpenStream(); err == nil {
@@ -734,8 +1113,19 @@ func BenchmarkAcceptClose(b *testing.B) {
 		}
 	}
 }
+
 func BenchmarkConnSmux(b *testing.B) {
 	cs, ss, err := getSmuxStreamPair()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+func BenchmarkConnSmuxPipe(b *testing.B) {
+	cs, ss, err := getSmuxStreamPairPipe()
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -754,12 +1144,27 @@ func BenchmarkConnTCP(b *testing.B) {
 	bench(b, cs, ss)
 }
 
+func BenchmarkConnPipe(b *testing.B) {
+	cs, ss := net.Pipe()
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
 func getSmuxStreamPair() (*Stream, *Stream, error) {
 	c1, c2, err := getTCPConnectionPair()
 	if err != nil {
 		return nil, nil, err
 	}
+	return getSmuxStreamPairInternal(c1, c2)
+}
 
+func getSmuxStreamPairPipe() (*Stream, *Stream, error) {
+	c1, c2 := net.Pipe()
+	return getSmuxStreamPairInternal(c1, c2)
+}
+
+func getSmuxStreamPairInternal(c1, c2 net.Conn) (*Stream, *Stream, error) {
 	s, err := Server(c2, nil)
 	if err != nil {
 		return nil, nil, err
@@ -839,3 +1244,10 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	}
 	wg.Wait()
 }
+
+func dumpGoroutine(t *testing.T) {
+	var b bytes.Buffer
+	pprof.Lookup("goroutine").WriteTo(&b, 1)
+	t.Log(b.String())
+}
+
