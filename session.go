@@ -320,12 +320,8 @@ func (s *Session) keepalive() {
 	defer tickerPing.Stop()
 	defer tickerTimeout.Stop()
 
-	/*s.rttTest = time.Now()
-	_, err := s.writeFrameInternal(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), tickerPing.C)
-	if err != nil {
-		s.Close()
-		return
-	}*/
+	s.rttTest = time.Now()
+	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 
 	for {
 		select {
