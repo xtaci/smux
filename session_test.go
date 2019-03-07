@@ -105,7 +105,7 @@ func TestEcho(t *testing.T) {
 }
 
 func TestGetDieCh(t *testing.T) {
-	cs, ss, err := getSmuxStreamPair()
+	cs, ss, err := getSmuxStreamPair(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestGetDieCh(t *testing.T) {
 }
 
 func TestGetDieCh2(t *testing.T) {
-	cs, ss, _ := getSmuxStreamPair()
+	cs, ss, _ := getSmuxStreamPair(nil)
 	testGetDieCh(t, cs, ss)
 }
 
@@ -140,15 +140,13 @@ func TestSpeed(t *testing.T) {
 }
 
 func TestSpeed2(t *testing.T) {
-	_, stop, cli, err := setupServerPipe(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testSpeed(t, cli)
 }
 
 func testSpeed(t *testing.T, cli net.Conn) {
+	defer cli.Close()
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	t.Log(stream.LocalAddr(), stream.RemoteAddr())
@@ -193,24 +191,27 @@ func TestParallel(t *testing.T) {
 }
 
 func TestParallel2(t *testing.T) {
-	_, stop, cli, err := setupServerPipe(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testParallel(t, cli)
 }
 
 func testParallel(t *testing.T, cli net.Conn) {
+	defer cli.Close()
 	session, _ := Client(cli, nil)
 
 	par := 1000
 	messages := 100
 	die := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(par)
 	for i := 0; i < par; i++ {
-		stream, _ := session.OpenStream()
+		stream, err := session.OpenStream()
+		if err != nil {
+			dumpGoroutine(t)
+			t.Fatalf("cannot create stream %v: %v", i, err)
+			break
+		}
+		wg.Add(1)
 		go func(s *Stream) {
 			buf := make([]byte, 20)
 			for j := 0; j < messages; j++ {
@@ -295,10 +296,7 @@ func TestTinyReadBuffer(t *testing.T) {
 }
 
 func TestTinyReadBuffer2(t *testing.T) {
-	_, stop, cli, err := setupServerPipe(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testTinyReadBuffer(t, cli)
 }
@@ -848,10 +846,7 @@ func TestReadDeadline(t *testing.T) {
 }
 
 func TestReadDeadline2(t *testing.T) {
-	_, stop, cli, err := setupServerPipe(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testReadDeadline(t, cli)
 }
@@ -888,10 +883,7 @@ func TestWriteDeadline(t *testing.T) {
 }
 
 func TestWriteDeadline2(t *testing.T) {
-	_, stop, cli, err := setupServerPipe(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testWriteDeadline(t, cli)
 }
@@ -932,10 +924,9 @@ func TestSlowReadBlocking2(t *testing.T) {
 }
 
 func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
-	//runtime.GOMAXPROCS(runtime.NumCPU() + 2)
 	config := &Config{
-		KeepAliveInterval:  10 * time.Second,
-		KeepAliveTimeout:   30 * time.Second,
+		KeepAliveInterval:  100 * time.Millisecond,
+		KeepAliveTimeout:   500 * time.Millisecond,
 		MaxFrameSize:       4096,
 		MaxReceiveBuffer:   1 * 1024 * 1024,
 		EnableStreamBuffer: true,
@@ -1039,18 +1030,19 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 			t.Log("normal stream start...")
 			defer func() {
 				atomic.StoreInt32(&flag, int32(0))
-				//stream.Close()
+				stream.Close()
 				t.Log("normal stream end...")
 			}()
 
-			const N = 25
+			const N = 100
+			const TestDt = 50 * time.Millisecond
 			buf := make([]byte, 12)
 			<- startNotify
 			for i := 0; i < N; i++ {
 				msg := fmt.Sprintf("hello%v", i)
 				start := time.Now()
 
-				stream.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+				stream.SetWriteDeadline(time.Now().Add(2 * TestDt))
 				_, err := stream.Write([]byte(msg))
 				if err != nil && strings.Contains(err.Error(), "i/o timeout") {
 					t.Log(stream.id, i, err,
@@ -1061,8 +1053,11 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 					t.Fatal(err)
 					return
 				}
+				/*t.Log("[normal]w", stream.id, i, "rtt", time.Since(start),
+					"stream.bucket", atomic.LoadInt32(&stream.bucket),
+					"stream.guessBucket", atomic.LoadInt32(&stream.guessBucket), "stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))*/
 
-				stream.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				stream.SetReadDeadline(time.Now().Add(2 * TestDt))
 				if n, err := stream.Read(buf); err != nil {
 					t.Log(stream.id, i, err,
 						"session.bucket", atomic.LoadInt32(&session.bucket),
@@ -1074,9 +1069,11 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 				} else if string(buf[:n]) != msg {
 					t.Fatal(err)
 				} else {
-					t.Log(stream.id, i, "time for normal stream rtt", time.Since(start))
+					t.Log("[normal]r", stream.id, i, "rtt", time.Since(start),
+						"stream.bucket", atomic.LoadInt32(&stream.bucket),
+						"stream.guessBucket", atomic.LoadInt32(&stream.guessBucket), "stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))
 				}
-				<- time.After(200 * time.Millisecond)
+				time.Sleep(TestDt)
 			}
 		} else {
 			t.Fatal(err)
@@ -1084,6 +1081,7 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 	}()
 	wg.Wait()
 }
+
 
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
@@ -1115,7 +1113,27 @@ func benchmarkAcceptClose(b *testing.B, cli net.Conn) {
 }
 
 func BenchmarkConnSmux(b *testing.B) {
-	cs, ss, err := getSmuxStreamPair()
+	config := DefaultConfig()
+	config.KeepAliveInterval = 50 * time.Millisecond
+	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.EnableStreamBuffer = false
+
+	cs, ss, err := getSmuxStreamPair(config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+func BenchmarkConnSmuxEnableStreamToken(b *testing.B) {
+	config := DefaultConfig()
+	config.KeepAliveInterval = 50 * time.Millisecond
+	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.EnableStreamBuffer = true
+
+	cs, ss, err := getSmuxStreamPair(config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1125,7 +1143,27 @@ func BenchmarkConnSmux(b *testing.B) {
 }
 
 func BenchmarkConnSmuxPipe(b *testing.B) {
-	cs, ss, err := getSmuxStreamPairPipe()
+	config := DefaultConfig()
+	config.KeepAliveInterval = 50 * time.Millisecond
+	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.EnableStreamBuffer = false
+
+	cs, ss, err := getSmuxStreamPairPipe(config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+func BenchmarkConnSmuxPipeEnableStreamToken(b *testing.B) {
+	config := DefaultConfig()
+	config.KeepAliveInterval = 50 * time.Millisecond
+	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.EnableStreamBuffer = true
+
+	cs, ss, err := getSmuxStreamPairPipe(config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1151,25 +1189,25 @@ func BenchmarkConnPipe(b *testing.B) {
 	bench(b, cs, ss)
 }
 
-func getSmuxStreamPair() (*Stream, *Stream, error) {
+func getSmuxStreamPair(config *Config) (*Stream, *Stream, error) {
 	c1, c2, err := getTCPConnectionPair()
 	if err != nil {
 		return nil, nil, err
 	}
-	return getSmuxStreamPairInternal(c1, c2)
+	return getSmuxStreamPairInternal(c1, c2, config)
 }
 
-func getSmuxStreamPairPipe() (*Stream, *Stream, error) {
+func getSmuxStreamPairPipe(config *Config) (*Stream, *Stream, error) {
 	c1, c2 := net.Pipe()
-	return getSmuxStreamPairInternal(c1, c2)
+	return getSmuxStreamPairInternal(c1, c2, config)
 }
 
-func getSmuxStreamPairInternal(c1, c2 net.Conn) (*Stream, *Stream, error) {
-	s, err := Server(c2, nil)
+func getSmuxStreamPairInternal(c1, c2 net.Conn, config *Config) (*Stream, *Stream, error) {
+	s, err := Server(c2, config)
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := Client(c1, nil)
+	c, err := Client(c1, config)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1247,7 +1285,7 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 
 func dumpGoroutine(t *testing.T) {
 	var b bytes.Buffer
-	pprof.Lookup("goroutine").WriteTo(&b, 1)
+	pprof.Lookup("goroutine").WriteTo(&b, 2)
 	t.Log(b.String())
 }
 

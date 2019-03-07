@@ -62,8 +62,9 @@ type Session struct {
 	BoostTimeout time.Duration
 
 	rttSn uint32
-	rttTest time.Time
-	rtt time.Duration
+	rttTest atomic.Value // time.Time
+	rtt atomic.Value // time.Duration
+	gotACK chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -81,6 +82,9 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.MaxStreamBuffer = config.MaxStreamBuffer
 	s.BoostTimeout = config.BoostTimeout
 	s.EnableStreamBuffer = config.EnableStreamBuffer
+
+	s.rtt.Store(500 * time.Millisecond)
+	s.gotACK = make(chan struct{}, 1)
 
 	if client {
 		s.nextStreamID = 1
@@ -301,7 +305,9 @@ func (s *Session) recvLoop() {
 				s.streamLock.Unlock()
 			case cmdACK:
 				if f.sid == atomic.LoadUint32(&s.rttSn) {
-					s.rtt = time.Now().Sub(s.rttTest)
+					rttTest := s.rttTest.Load().(time.Time)
+					s.rtt.Store(time.Now().Sub(rttTest))
+					s.gotACK <- struct{}{}
 				}
 			default:
 				s.Close()
@@ -314,19 +320,19 @@ func (s *Session) recvLoop() {
 	}
 }
 
-func (s *Session) keepalive() {
+/*func (s *Session) keepalive() {
 	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
 	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
 	defer tickerPing.Stop()
 	defer tickerTimeout.Stop()
 
-	s.rttTest = time.Now()
+	s.rttTest.Store(time.Now())
 	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 
 	for {
 		select {
 		case <-tickerPing.C:
-			s.rttTest = time.Now()
+			s.rttTest.Store(time.Now())
 			s.writeFrameInternal(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), tickerPing.C)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
@@ -338,10 +344,60 @@ func (s *Session) keepalive() {
 			return
 		}
 	}
+}*/
+
+func (s *Session) keepalive() {
+	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
+
+	s.rttTest.Store(time.Now())
+	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
+
+	var stopT = func() {
+		t.Stop()
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+
+	var stopCk = func() {
+		ckTimeout.Stop()
+		select {
+		case <-ckTimeout.C:
+		default:
+		}
+	}
+
+	for {
+		select {
+		case <-ckTimeout.C: // should no trigger without timeout
+			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
+				s.Close()
+				stopT()
+				return
+			}
+		case <-s.gotACK:
+			t.Reset(s.config.KeepAliveInterval) // setup next ping
+			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // reset timeout check
+		case <-t.C:
+			// send ping
+			s.rttTest.Store(time.Now())
+			s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+			s.notifyBucket() // force a signal to the recvLoop
+			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
+			t.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // setup next ping
+		case <-s.die:
+			// clear all timer
+			stopT()
+			stopCk()
+			return
+		}
+	}
 }
 
 func (s *Session) GetRTT() (time.Duration) {
-	return s.rtt
+	return s.rtt.Load().(time.Duration)
 }
 
 func (s *Session) sendLoop() {

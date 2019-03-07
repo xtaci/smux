@@ -52,6 +52,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 	s.guessBucket = int32(s.sess.MaxStreamBuffer)
 	s.lastWrite.Store(time.Now())
+	s.guessNeeded = int32(s.sess.MaxStreamBuffer) / 2
 	return s
 }
 
@@ -175,8 +176,8 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
-		s.sess.streamClosed(s.id)
 		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		s.sess.streamClosed(s.id)
 		return err
 	}
 }
@@ -271,10 +272,14 @@ func (s *Stream) pushBytes(p []byte) {
 	if lastReadOut != 0 {
 		s.lastWrite.Store(time.Now())
 		needed := atomic.LoadInt32(&s.guessNeeded)
-		s.guessBucket = int32(float32(s.guessBucket) * 0.8 + float32(needed) * 0.2)
+		//s.guessBucket = int32(float32(s.guessBucket) * 0.8 + float32(needed) * 0.2)
+		//s.guessBucket = int32(float32(s.guessBucket) * 0.2 + float32(needed) * 0.8)
+		s.guessBucket = int32((int64(s.guessBucket) * 8 + int64(needed) * 2) / 10)
+		//s.guessBucket = int32((int64(s.guessBucket) * 2 + int64(needed) * 8) / 10)
 	}
 
 	if used <= s.guessBucket {
+//	if used <= atomic.LoadInt32(&s.guessNeeded) {
 		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 		return
 	}
@@ -330,13 +335,12 @@ func (s *Stream) pauseWrite() {
 
 // mark this stream has been resume write
 func (s *Stream) resumeWrite() {
-	if atomic.LoadInt32(&s.fulflag) == 1 {
+	if atomic.SwapInt32(&s.fulflag, 0) == 1 {
 		select {
 		case s.bucketNotify <- struct{}{}:
 		default:
 		}
 	}
-	atomic.StoreInt32(&s.fulflag, 0)
 }
 
 // returnTokens is called by stream to return token after read
@@ -349,35 +353,30 @@ func (s *Stream) returnTokens(n int) {
 	totalRead := atomic.AddInt32(&s.countRead, int32(n))
 	lastWrite, _ := s.lastWrite.Load().(time.Time)
 	dt := time.Now().Sub(lastWrite) + 1
-	needed := totalRead * int32(s.sess.rtt / dt)
+	rtt := s.sess.rtt.Load().(time.Duration)
+	needed := totalRead * int32(rtt / dt)
+
+	//guessNeeded := atomic.LoadInt32(&s.guessNeeded)
+	//needed = int32((int64(guessNeeded) * 8 + int64(needed) * 2) / 10)
+
 	atomic.StoreInt32(&s.guessNeeded, needed)
-	if used <= 0 || (needed > 0 && needed >= used) {
+	if used <= 0 || needed >= used {
 		s.sendResume()
 	}
 }
 
 // send cmdFUL to pause write
 func (s *Stream) sendPause() {
-	s.empflagLock.Lock()
-	if s.empflag == 1 {
-		s.empflag = 0
-		s.empflagLock.Unlock()
+	if atomic.CompareAndSwapInt32(&s.empflag, 1, 0) {
 		s.sess.writeFrameNRet(newFrame(cmdFUL, s.id))
-		return
 	}
-	s.empflagLock.Unlock()
 }
 
 // send cmdEMP to resume write
 func (s *Stream) sendResume() {
-	s.empflagLock.Lock()
-	if s.empflag == 0 {
-		s.empflag = 1
-		s.empflagLock.Unlock()
+	if atomic.CompareAndSwapInt32(&s.empflag, 0, 1) {
 		s.sess.writeFrameNRet(newFrame(cmdEMP, s.id))
-		return
 	}
-	s.empflagLock.Unlock()
 }
 
 var errTimeout error = &timeoutError{}
