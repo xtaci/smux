@@ -272,14 +272,10 @@ func (s *Stream) pushBytes(p []byte) {
 	if lastReadOut != 0 {
 		s.lastWrite.Store(time.Now())
 		needed := atomic.LoadInt32(&s.guessNeeded)
-		//s.guessBucket = int32(float32(s.guessBucket) * 0.8 + float32(needed) * 0.2)
-		//s.guessBucket = int32(float32(s.guessBucket) * 0.2 + float32(needed) * 0.8)
 		s.guessBucket = int32((int64(s.guessBucket) * 8 + int64(needed) * 2) / 10)
-		//s.guessBucket = int32((int64(s.guessBucket) * 2 + int64(needed) * 8) / 10)
 	}
 
 	if used <= s.guessBucket {
-//	if used <= atomic.LoadInt32(&s.guessNeeded) {
 		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 		return
 	}
@@ -355,10 +351,6 @@ func (s *Stream) returnTokens(n int) {
 	dt := time.Now().Sub(lastWrite) + 1
 	rtt := s.sess.rtt.Load().(time.Duration)
 	needed := totalRead * int32(rtt / dt)
-
-	//guessNeeded := atomic.LoadInt32(&s.guessNeeded)
-	//needed = int32((int64(guessNeeded) * 8 + int64(needed) * 2) / 10)
-
 	atomic.StoreInt32(&s.guessNeeded, needed)
 	if used <= 0 || needed >= used {
 		s.sendResume()

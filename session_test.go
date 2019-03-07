@@ -190,7 +190,7 @@ func TestParallel(t *testing.T) {
 	testParallel(t, cli)
 }
 
-func TestParallel2(t *testing.T) {
+func TestParallel2(t *testing.T) { // TODO: with -race test not pass
 	_, stop, cli, _ := setupServerPipe(t)
 	defer stop()
 	testParallel(t, cli)
@@ -200,7 +200,7 @@ func testParallel(t *testing.T, cli net.Conn) {
 	defer cli.Close()
 	session, _ := Client(cli, nil)
 
-	par := 1000
+	par := 1000 // TODO: 10000 not pass on 2nd test
 	messages := 100
 	die := make(chan struct{})
 	var wg sync.WaitGroup
@@ -456,7 +456,6 @@ func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(blockWriteCli, config)
 	time.Sleep(3 * time.Second)
-	//time.Sleep(time.Hour * 2)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}

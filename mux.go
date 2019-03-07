@@ -37,9 +37,8 @@ type Config struct {
 // DefaultConfig is used to return a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepAliveInterval:  5 * time.Second,
-		//KeepAliveTimeout:   30 * time.Second,
-		KeepAliveTimeout:   5500 * time.Millisecond, // RTT usually < 5500ms
+		KeepAliveInterval:  2500 * time.Millisecond,
+		KeepAliveTimeout:   7500 * time.Millisecond, // RTT usually < 7500ms
 		MaxFrameSize:       32768,
 		MaxReceiveBuffer:   16 * 1024 * 1024,
 		EnableStreamBuffer: true,
@@ -53,9 +52,6 @@ func VerifyConfig(config *Config) error {
 	if config.KeepAliveInterval == 0 {
 		return errors.New("keep-alive interval must be positive")
 	}
-	//if config.KeepAliveTimeout < config.KeepAliveInterval {
-	//	return errors.New("keep-alive timeout must be larger than keep-alive interval")
-	//}
 	if config.MaxFrameSize <= 0 {
 		return errors.New("max frame size must be positive")
 	}

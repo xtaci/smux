@@ -320,35 +320,8 @@ func (s *Session) recvLoop() {
 	}
 }
 
-/*func (s *Session) keepalive() {
-	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
-	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
-	defer tickerPing.Stop()
-	defer tickerTimeout.Stop()
-
-	s.rttTest.Store(time.Now())
-	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
-
-	for {
-		select {
-		case <-tickerPing.C:
-			s.rttTest.Store(time.Now())
-			s.writeFrameInternal(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), tickerPing.C)
-			s.notifyBucket() // force a signal to the recvLoop
-		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
-				s.Close()
-				return
-			}
-		case <-s.die:
-			return
-		}
-	}
-}*/
-
 func (s *Session) keepalive() {
 	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
-
 	s.rttTest.Store(time.Now())
 	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
@@ -371,22 +344,24 @@ func (s *Session) keepalive() {
 
 	for {
 		select {
-		case <-ckTimeout.C: // should no trigger without timeout
+		case <-ckTimeout.C: // should never trigger if no timeout
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
 				stopT()
 				return
 			}
-		case <-s.gotACK:
+
+		case <-s.gotACK: // setup next ping after got ACK
 			t.Reset(s.config.KeepAliveInterval) // setup next ping
 			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // reset timeout check
-		case <-t.C:
-			// send ping
+
+		case <-t.C: // send ping
+			t.Reset(s.config.KeepAliveTimeout + s.config.KeepAliveInterval) // setup next ping
 			s.rttTest.Store(time.Now())
 			s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 			s.notifyBucket() // force a signal to the recvLoop
 			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
-			t.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // setup next ping
+
 		case <-s.die:
 			// clear all timer
 			stopT()
