@@ -1,7 +1,6 @@
 package smux
 
 import (
-	"fmt"
 	"io"
 	"time"
 
@@ -24,15 +23,27 @@ type Config struct {
 	// MaxReceiveBuffer is used to control the maximum
 	// number of data in the buffer pool
 	MaxReceiveBuffer int
+
+	// Enable Stream buffer
+	EnableStreamBuffer bool
+
+	// maximum bytes that each Stream can use
+	MaxStreamBuffer int
+
+	// for initial boost
+	BoostTimeout time.Duration
 }
 
 // DefaultConfig is used to return a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepAliveInterval: 10 * time.Second,
-		KeepAliveTimeout:  30 * time.Second,
-		MaxFrameSize:      32768,
-		MaxReceiveBuffer:  4194304,
+		KeepAliveInterval:  2500 * time.Millisecond,
+		KeepAliveTimeout:   7500 * time.Millisecond, // RTT usually < 7500ms
+		MaxFrameSize:       32768,
+		MaxReceiveBuffer:   16 * 1024 * 1024,
+		EnableStreamBuffer: true,
+		MaxStreamBuffer:    8 * 1024 * 1024,
+		BoostTimeout:       10 * time.Second,
 	}
 }
 
@@ -40,9 +51,6 @@ func DefaultConfig() *Config {
 func VerifyConfig(config *Config) error {
 	if config.KeepAliveInterval == 0 {
 		return errors.New("keep-alive interval must be positive")
-	}
-	if config.KeepAliveTimeout < config.KeepAliveInterval {
-		return fmt.Errorf("keep-alive timeout must be larger than keep-alive interval")
 	}
 	if config.MaxFrameSize <= 0 {
 		return errors.New("max frame size must be positive")
@@ -52,6 +60,9 @@ func VerifyConfig(config *Config) error {
 	}
 	if config.MaxReceiveBuffer <= 0 {
 		return errors.New("max receive buffer must be positive")
+	}
+	if config.MaxStreamBuffer <= 0 {
+		return errors.New("max stream receive buffer must be positive")
 	}
 	return nil
 }

@@ -14,10 +14,10 @@ const (
 	defaultAcceptBacklog = 1024
 )
 
-const (
-	errBrokenPipe      = "broken pipe"
-	errInvalidProtocol = "invalid protocol version"
-	errGoAway          = "stream id overflows, should start a new connection"
+var (
+	ErrBrokenPipe      = errors.New("broken pipe")
+	ErrInvalidProtocol = errors.New("invalid protocol version")
+	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
 )
 
 type writeRequest struct {
@@ -55,6 +55,17 @@ type Session struct {
 	deadline atomic.Value
 
 	writes chan writeRequest
+	writeCtrl chan writeRequest
+
+	EnableStreamBuffer bool
+	MaxReceiveBuffer int
+	MaxStreamBuffer int
+	BoostTimeout time.Duration
+
+	rttSn uint32
+	rttTest atomic.Value // time.Time
+	rtt atomic.Value // time.Duration
+	gotACK chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -67,6 +78,15 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
+	s.writeCtrl = make(chan writeRequest, 1)
+
+	s.MaxReceiveBuffer = config.MaxReceiveBuffer
+	s.MaxStreamBuffer = config.MaxStreamBuffer
+	s.BoostTimeout = config.BoostTimeout
+	s.EnableStreamBuffer = config.EnableStreamBuffer
+
+	s.rtt.Store(500 * time.Millisecond)
+	s.gotACK = make(chan struct{}, 1)
 
 	if client {
 		s.nextStreamID = 1
@@ -82,14 +102,14 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
 	if s.IsClosed() {
-		return nil, errors.New(errBrokenPipe)
+		return nil, ErrBrokenPipe
 	}
 
 	// generate stream id
 	s.nextStreamIDLock.Lock()
 	if s.goAway > 0 {
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.New(errGoAway)
+		return nil, ErrGoAway
 	}
 
 	s.nextStreamID += 2
@@ -97,7 +117,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	if sid == sid%2 { // stream-id overflows
 		s.goAway = 1
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.New(errGoAway)
+		return nil, ErrGoAway
 	}
 	s.nextStreamIDLock.Unlock()
 
@@ -128,7 +148,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case <-deadline:
 		return nil, errTimeout
 	case <-s.die:
-		return nil, errors.New(errBrokenPipe)
+		return nil, ErrBrokenPipe
 	}
 }
 
@@ -139,7 +159,7 @@ func (s *Session) Close() (err error) {
 	select {
 	case <-s.die:
 		s.dieLock.Unlock()
-		return errors.New(errBrokenPipe)
+		return ErrBrokenPipe
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
@@ -216,7 +236,7 @@ func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
 	}
 
 	if hdr.Version() != version {
-		return f, errors.New(errInvalidProtocol)
+		return f, ErrInvalidProtocol
 	}
 
 	f.ver = hdr.Version()
@@ -244,6 +264,9 @@ func (s *Session) recvLoop() {
 
 			switch f.cmd {
 			case cmdNOP:
+				if s.EnableStreamBuffer {
+					s.writeFrameCtrl(newFrame(cmdACK, f.sid))
+				}
 			case cmdSYN:
 				s.streamLock.Lock()
 				if _, ok := s.streams[f.sid]; !ok {
@@ -270,6 +293,24 @@ func (s *Session) recvLoop() {
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
+			case cmdFUL:
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					stream.pauseWrite()
+				}
+				s.streamLock.Unlock()
+			case cmdEMP:
+				s.streamLock.Lock()
+				if stream, ok := s.streams[f.sid]; ok {
+					stream.resumeWrite()
+				}
+				s.streamLock.Unlock()
+			case cmdACK:
+				if f.sid == atomic.LoadUint32(&s.rttSn) {
+					rttTest := s.rttTest.Load().(time.Time)
+					s.rtt.Store(time.Now().Sub(rttTest))
+					s.gotACK <- struct{}{}
+				}
 			default:
 				s.Close()
 				return
@@ -282,53 +323,97 @@ func (s *Session) recvLoop() {
 }
 
 func (s *Session) keepalive() {
-	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
-	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
-	defer tickerPing.Stop()
-	defer tickerTimeout.Stop()
+	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
+	s.rttTest.Store(time.Now())
+	s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
+
+	var stopT = func() {
+		t.Stop()
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+
+	var stopCk = func() {
+		ckTimeout.Stop()
+		select {
+		case <-ckTimeout.C:
+		default:
+		}
+	}
+
 	for {
 		select {
-		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C)
-			s.notifyBucket() // force a signal to the recvLoop
-		case <-tickerTimeout.C:
+		case <-ckTimeout.C: // should never trigger if no timeout
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
 				s.Close()
+				stopT()
 				return
 			}
+
+		case <-s.gotACK: // setup next ping after got ACK
+			t.Reset(s.config.KeepAliveInterval) // setup next ping
+			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // reset timeout check
+
+		case <-t.C: // send ping
+			t.Reset(s.config.KeepAliveTimeout + s.config.KeepAliveInterval) // setup next ping
+			s.rttTest.Store(time.Now())
+			s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+			s.notifyBucket() // force a signal to the recvLoop
+			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
+
 		case <-s.die:
+			// clear all timer
+			stopT()
+			stopCk()
 			return
 		}
 	}
 }
 
+func (s *Session) GetRTT() (time.Duration) {
+	return s.rtt.Load().(time.Duration)
+}
+
 func (s *Session) sendLoop() {
 	buf := make([]byte, (1<<16)+headerSize)
+	send := func(request writeRequest) {
+		buf[0] = request.frame.ver
+		buf[1] = request.frame.cmd
+		binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
+		binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+		copy(buf[headerSize:], request.frame.data)
+		n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
+
+		n -= headerSize
+		if n < 0 {
+			n = 0
+		}
+
+		result := writeResult{
+			n:   n,
+			err: err,
+		}
+
+		request.result <- result
+		close(request.result)
+	}
+
+	var req writeRequest
 	for {
 		select {
 		case <-s.die:
 			return
-		case request := <-s.writes:
-			buf[0] = request.frame.ver
-			buf[1] = request.frame.cmd
-			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
-			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
-			copy(buf[headerSize:], request.frame.data)
-			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
-
-			n -= headerSize
-			if n < 0 {
-				n = 0
+		case req = <-s.writeCtrl:
+		case req = <-s.writes:
+			if len(s.writeCtrl) > 0 {
+				reqCtrl := <-s.writeCtrl
+				send(reqCtrl)
 			}
-
-			result := writeResult{
-				n:   n,
-				err: err,
-			}
-
-			request.result <- result
-			close(request.result)
 		}
+		send(req)
 	}
 }
 
@@ -340,16 +425,9 @@ func (s *Session) writeFrame(f Frame) (n int, err error) {
 
 // internal writeFrame version to support deadline used in keepalive
 func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, error) {
-	req := writeRequest{
-		frame:  f,
-		result: make(chan writeResult, 1),
-	}
-	select {
-	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
-	case s.writes <- req:
-	case <-deadline:
-		return 0, errTimeout
+	req, err := s.writeFrameHalf(f, deadline)
+	if err != nil {
+		return 0, err
 	}
 
 	select {
@@ -358,6 +436,45 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 	case <-deadline:
 		return 0, errTimeout
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, ErrBrokenPipe
 	}
 }
+
+
+// must send but nerver block
+func (s *Session) writeFrameCtrl(f Frame) {
+	req := writeRequest{
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case <-s.die:
+	case s.writeCtrl <- req:
+	}
+}
+
+func (s *Session) writeFrameHalf(f Frame, deadline <-chan time.Time) (*writeRequest, error) {
+	req := writeRequest{
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case <-s.die:
+		return nil, ErrBrokenPipe
+	case s.writes <- req:
+	case <-deadline:
+		return nil, errTimeout
+	}
+	return &req, nil
+}
+
+func (s *Session) WriteCustomCMD(cmd byte, bts []byte) (n int, err error) {
+	if s.IsClosed() {
+		return 0, ErrBrokenPipe
+	}
+	f := newFrame(cmd, 0)
+	f.data = bts
+
+	return s.writeFrame(f)
+}
+
