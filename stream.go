@@ -52,7 +52,6 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
 	s.guessBucket = int32(s.sess.MaxStreamBuffer)
 	s.lastWrite.Store(time.Now())
-	s.guessNeeded = int32(s.sess.MaxStreamBuffer) / 2
 	return s
 }
 
@@ -331,11 +330,10 @@ func (s *Stream) pauseWrite() {
 
 // mark this stream has been resume write
 func (s *Stream) resumeWrite() {
-	if atomic.SwapInt32(&s.fulflag, 0) == 1 {
-		select {
-		case s.bucketNotify <- struct{}{}:
-		default:
-		}
+	atomic.StoreInt32(&s.fulflag, 0)
+	select {
+	case s.bucketNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -360,14 +358,14 @@ func (s *Stream) returnTokens(n int) {
 // send cmdFUL to pause write
 func (s *Stream) sendPause() {
 	if atomic.CompareAndSwapInt32(&s.empflag, 1, 0) {
-		s.sess.writeFrameNRet(newFrame(cmdFUL, s.id))
+		s.sess.writeFrameCtrl(newFrame(cmdFUL, s.id))
 	}
 }
 
 // send cmdEMP to resume write
 func (s *Stream) sendResume() {
 	if atomic.CompareAndSwapInt32(&s.empflag, 0, 1) {
-		s.sess.writeFrameNRet(newFrame(cmdEMP, s.id))
+		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), nil)
 	}
 }
 

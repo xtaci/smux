@@ -200,7 +200,7 @@ func testParallel(t *testing.T, cli net.Conn) {
 	defer cli.Close()
 	session, _ := Client(cli, nil)
 
-	par := 1000 // TODO: 10000 not pass on 2nd test
+	par := 1000
 	messages := 100
 	die := make(chan struct{})
 	var wg sync.WaitGroup
@@ -214,21 +214,34 @@ func testParallel(t *testing.T, cli net.Conn) {
 		wg.Add(1)
 		go func(s *Stream) {
 			buf := make([]byte, 20)
-			for j := 0; j < messages; j++ {
-				msg := fmt.Sprintf("hello%v", j)
-				s.Write([]byte(msg))
-				if _, err := s.Read(buf); err != nil {
-					break
+
+			for { // keep read & write untill all stream end
+				select {
+				case <-die:
+					goto END
+				default:
+				}
+				for j := 0; j < messages; j++ {
+					msg := fmt.Sprintf("hello%v", j)
+					s.Write([]byte(msg))
+					if _, err := s.Read(buf); err != nil {
+						break
+					}
 				}
 			}
-			<-die
+
+		END:
+			//<-die
 			s.Close()
 			wg.Done()
 		}(stream)
 	}
-	t.Log("created", session.NumStreams(), "streams")
+	t.Log("created", session.NumStreams(), "streams and keep streams do read & write")
+	time.Sleep(500 * time.Millisecond)
+	t.Log("kill all", session.NumStreams(), "streams")
 	close(die)
 	wg.Wait()
+	t.Log("all", session.NumStreams(), "streams end")
 	session.Close()
 }
 
@@ -929,8 +942,8 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 		MaxFrameSize:       4096,
 		MaxReceiveBuffer:   1 * 1024 * 1024,
 		EnableStreamBuffer: true,
-		MaxStreamBuffer:    16384,
-		BoostTimeout:       100 * time.Millisecond,
+		MaxStreamBuffer:    8192,
+		BoostTimeout:       0 * time.Millisecond,
 	}
 
 	go func (conn net.Conn) {
@@ -944,9 +957,8 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 						if err != nil {
 							return
 						}
-//						t.Log("s1", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
+						//t.Log("s1", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
 						s.Write(buf[:n])
-//						t.Log("s2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket), n)
 					}
 				}(stream)
 			} else {
@@ -972,11 +984,15 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 				t.Log("fast write stream end...")
 			}()
 
-			const SIZE = 4 * 1024 // 4KB
+			const SIZE = 1 * 1024 // Bytes
+			const SPDW = 16 * 1024 * 1024 // Bytes/s
+			const SPDR = 512 * 1024 // Bytes/s
+			const TestDtW = time.Second / time.Duration(SPDW/SIZE)
+			const TestDtR = time.Second / time.Duration(SPDR/SIZE)
 
 			var fwg sync.WaitGroup
 			fwg.Add(1)
-			go func() { // read = 4 * 2000 KB/s
+			go func() { // read = SPDR
 				defer fwg.Done()
 				rbuf := make([]byte, SIZE, SIZE)
 				for atomic.LoadInt32(&flag) > 0 {
@@ -988,7 +1004,7 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 						}
 						break
 					}
-					<- time.After(500 * time.Microsecond) // slow down read
+					time.Sleep(TestDtR) // slow down read
 				}
 			}()
 
@@ -997,8 +1013,8 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 				buf[i] = byte('-')
 			}
 			startNotify <- true
-			for atomic.LoadInt32(&flag) > 0 { // write = 4 * 10000 KB/s
-				stream.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+			for atomic.LoadInt32(&flag) > 0 { // write = SPDW
+				stream.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 				_, err := stream.Write(buf)
 				if err != nil {
 					if strings.Contains(err.Error(), "i/o timeout") {
@@ -1007,8 +1023,8 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 					}
 					break
 				}
-				<- time.After(100 * time.Microsecond) // slow down write
-//				t.Log("f2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+				//t.Log("f2", stream.id, "session.bucket", atomic.LoadInt32(&session.bucket), "stream.bucket", atomic.LoadInt32(&stream.bucket))
+				time.Sleep(TestDtW) // slow down write
 			}
 			fwg.Wait()
 
@@ -1018,7 +1034,7 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 	}()
 
 	wg.Add(1)
-	go func() { // normal write
+	go func() { // normal write, rtt test
 		defer func() {
 			session.Close()
 			wg.Done()
@@ -1035,13 +1051,15 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 
 			const N = 100
 			const TestDt = 50 * time.Millisecond
+			const TestTimeout = 500 * time.Millisecond
+
 			buf := make([]byte, 12)
 			<- startNotify
 			for i := 0; i < N; i++ {
 				msg := fmt.Sprintf("hello%v", i)
 				start := time.Now()
 
-				stream.SetWriteDeadline(time.Now().Add(2 * TestDt))
+				stream.SetWriteDeadline(time.Now().Add(TestTimeout))
 				_, err := stream.Write([]byte(msg))
 				if err != nil && strings.Contains(err.Error(), "i/o timeout") {
 					t.Log(stream.id, i, err,
@@ -1054,13 +1072,13 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 				}
 				/*t.Log("[normal]w", stream.id, i, "rtt", time.Since(start),
 					"stream.bucket", atomic.LoadInt32(&stream.bucket),
-					"stream.guessBucket", atomic.LoadInt32(&stream.guessBucket), "stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))*/
+					"stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))*/
 
-				stream.SetReadDeadline(time.Now().Add(2 * TestDt))
+				stream.SetReadDeadline(time.Now().Add(TestTimeout))
 				if n, err := stream.Read(buf); err != nil {
 					t.Log(stream.id, i, err,
-						"session.bucket", atomic.LoadInt32(&session.bucket),
-						"stream.bucket", atomic.LoadInt32(&stream.bucket),
+						"session.bucket", atomic.LoadInt32(&session.bucket), // 0 means MaxReceiveBuffer not enough
+						"stream.bucket", atomic.LoadInt32(&stream.bucket), // >= MaxStreamBuffer means MaxStreamBuffer not enough or flag not send (bug)
 						"stream.empflag", atomic.LoadInt32(&stream.empflag), "stream.fulflag", atomic.LoadInt32(&stream.fulflag))
 					dumpGoroutine(t)
 					t.Fatal(stream.id, i, err, "since start", time.Since(start))
@@ -1070,7 +1088,7 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 				} else {
 					t.Log("[normal]r", stream.id, i, "rtt", time.Since(start),
 						"stream.bucket", atomic.LoadInt32(&stream.bucket),
-						"stream.guessBucket", atomic.LoadInt32(&stream.guessBucket), "stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))
+						"stream.guessNeeded", atomic.LoadInt32(&stream.guessNeeded))
 				}
 				time.Sleep(TestDt)
 			}

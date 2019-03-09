@@ -55,6 +55,7 @@ type Session struct {
 	deadline atomic.Value
 
 	writes chan writeRequest
+	writeCtrl chan writeRequest
 
 	EnableStreamBuffer bool
 	MaxReceiveBuffer int
@@ -77,6 +78,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
+	s.writeCtrl = make(chan writeRequest, 1)
 
 	s.MaxReceiveBuffer = config.MaxReceiveBuffer
 	s.MaxStreamBuffer = config.MaxStreamBuffer
@@ -263,7 +265,7 @@ func (s *Session) recvLoop() {
 			switch f.cmd {
 			case cmdNOP:
 				if s.EnableStreamBuffer {
-					s.writeFrameNRet(newFrame(cmdACK, f.sid))
+					s.writeFrameCtrl(newFrame(cmdACK, f.sid))
 				}
 			case cmdSYN:
 				s.streamLock.Lock()
@@ -323,7 +325,7 @@ func (s *Session) recvLoop() {
 func (s *Session) keepalive() {
 	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
 	s.rttTest.Store(time.Now())
-	s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+	s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
 
 	var stopT = func() {
@@ -358,7 +360,7 @@ func (s *Session) keepalive() {
 		case <-t.C: // send ping
 			t.Reset(s.config.KeepAliveTimeout + s.config.KeepAliveInterval) // setup next ping
 			s.rttTest.Store(time.Now())
-			s.writeFrameNRet(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+			s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 			s.notifyBucket() // force a signal to the recvLoop
 			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
 
@@ -377,31 +379,41 @@ func (s *Session) GetRTT() (time.Duration) {
 
 func (s *Session) sendLoop() {
 	buf := make([]byte, (1<<16)+headerSize)
+	send := func(request writeRequest) {
+		buf[0] = request.frame.ver
+		buf[1] = request.frame.cmd
+		binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
+		binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+		copy(buf[headerSize:], request.frame.data)
+		n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
+
+		n -= headerSize
+		if n < 0 {
+			n = 0
+		}
+
+		result := writeResult{
+			n:   n,
+			err: err,
+		}
+
+		request.result <- result
+		close(request.result)
+	}
+
+	var req writeRequest
 	for {
 		select {
 		case <-s.die:
 			return
-		case request := <-s.writes:
-			buf[0] = request.frame.ver
-			buf[1] = request.frame.cmd
-			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
-			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
-			copy(buf[headerSize:], request.frame.data)
-			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
-
-			n -= headerSize
-			if n < 0 {
-				n = 0
+		case req = <-s.writeCtrl:
+		case req = <-s.writes:
+			if len(s.writeCtrl) > 0 {
+				reqCtrl := <-s.writeCtrl
+				send(reqCtrl)
 			}
-
-			result := writeResult{
-				n:   n,
-				err: err,
-			}
-
-			request.result <- result
-			close(request.result)
 		}
+		send(req)
 	}
 }
 
@@ -428,8 +440,17 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 	}
 }
 
-func (s *Session) writeFrameNRet(f Frame) {
-	s.writeFrameHalf(f, nil)
+
+// must send but nerver block
+func (s *Session) writeFrameCtrl(f Frame) {
+	req := writeRequest{
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case <-s.die:
+	case s.writeCtrl <- req:
+	}
 }
 
 func (s *Session) writeFrameHalf(f Frame, deadline <-chan time.Time) (*writeRequest, error) {
