@@ -95,6 +95,10 @@ READ:
 		return 0, io.EOF
 	}
 
+	if n == 0 {
+		s.sendResumeForce()
+	}
+
 	select {
 	case <-s.chReadEvent:
 		goto READ
@@ -175,7 +179,7 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
-		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), time.After(s.sess.config.KeepAliveTimeout))
 		s.sess.streamClosed(s.id)
 		return err
 	}
@@ -367,6 +371,11 @@ func (s *Stream) sendResume() {
 	if atomic.CompareAndSwapInt32(&s.empflag, 0, 1) {
 		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
+}
+
+func (s *Stream) sendResumeForce() {
+	atomic.StoreInt32(&s.empflag, 1)
+	s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 }
 
 var errTimeout error = &timeoutError{}

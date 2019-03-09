@@ -278,11 +278,13 @@ func (s *Session) recvLoop() {
 			case cmdPSH:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {
+					s.streamLock.Unlock()
 					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
 					stream.pushBytes(f.data)
 					stream.notifyReadEvent()
+				} else {
+					s.streamLock.Unlock()
 				}
-				s.streamLock.Unlock()
 			case cmdFUL:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[f.sid]; ok {

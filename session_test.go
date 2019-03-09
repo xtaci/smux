@@ -1195,6 +1195,52 @@ func testReadStreamAfterStreamCloseButRemainData(t *testing.T, s1 *Stream, s2 *S
 	}
 }
 
+func TestReadZeroLengthBuffer(t *testing.T) {
+	s1, s2, err := getSmuxStreamPair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReadZeroLengthBuffer(t, s1, s2)
+}
+
+func TestReadZeroLengthBuffer2(t *testing.T) {
+	s1, s2, err := getSmuxStreamPairPipe(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReadZeroLengthBuffer(t, s1, s2)
+}
+
+func TestReadZeroLengthBuffer3(t *testing.T) {
+	s1, s2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReadZeroLengthBuffer(t, s1, s2)
+}
+
+func testReadZeroLengthBuffer(t *testing.T, srv net.Conn, cli net.Conn) {
+	gotRet := make(chan bool, 1)
+	readyRead := make(chan bool, 1)
+	go func(){
+		buf := make([]byte, 0)
+		close(readyRead)
+		cli.Read(buf)
+		close(gotRet)
+	}()
+
+	<-readyRead
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-gotRet:
+	default:
+		t.Fatal("reading zero length buffer should not block")
+	}
+	srv.Close()
+	cli.Close()
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
 	if err != nil {
