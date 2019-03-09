@@ -41,6 +41,7 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 		}
 		go handleConnection(conn)
 	}()
+	time.Sleep(20 * time.Millisecond)
 	addr = ln.Addr().String()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {

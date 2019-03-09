@@ -179,8 +179,9 @@ func (s *Stream) Close() error {
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
-		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), time.After(s.sess.config.KeepAliveTimeout))
 		s.sess.streamClosed(s.id)
+		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), time.After(s.sess.config.KeepAliveTimeout))
+		//s.sess.streamClosed(s.id)
 		return err
 	}
 }
@@ -361,16 +362,20 @@ func (s *Stream) returnTokens(n int) {
 
 // send cmdFUL to pause write
 func (s *Stream) sendPause() {
-	if atomic.CompareAndSwapInt32(&s.empflag, 1, 0) {
+	s.empflagLock.Lock()
+	if atomic.SwapInt32(&s.empflag, 0) == 1 {
 		s.sess.writeFrameCtrl(newFrame(cmdFUL, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
+	s.empflagLock.Unlock()
 }
 
 // send cmdEMP to resume write
 func (s *Stream) sendResume() {
-	if atomic.CompareAndSwapInt32(&s.empflag, 0, 1) {
+	s.empflagLock.Lock()
+	if atomic.SwapInt32(&s.empflag, 1) == 0 {
 		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
+	s.empflagLock.Unlock()
 }
 
 func (s *Stream) sendResumeForce() {
