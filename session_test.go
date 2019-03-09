@@ -1099,6 +1099,64 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 	wg.Wait()
 }
 
+func TestReadStreamAfterStreamCloseButRemainData(t *testing.T) {
+	s1, s2, err := getSmuxStreamPair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReadStreamAfterStreamCloseButRemainData(t, s1, s2)
+}
+
+func TestReadStreamAfterStreamCloseButRemainDataPipe(t *testing.T) {
+	s1, s2, err := getSmuxStreamPairPipe(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReadStreamAfterStreamCloseButRemainData(t, s1, s2)
+}
+
+func testReadStreamAfterStreamCloseButRemainData(t *testing.T, s1 *Stream, s2 *Stream) {
+	defer s2.Close()
+
+	const N = 10
+	var sent string
+	var received string
+
+	// send and immediately close
+	nsent := 0
+	for i := 0; i < N; i++ {
+		msg := fmt.Sprintf("hello%v", i)
+		sent += msg
+		n, err := s1.Write([]byte(msg))
+		if err != nil {
+			t.Fatal("cannot write")
+		}
+		nsent += n
+	}
+	s1.Close()
+
+	// read out all remain data
+	buf := make([]byte, 10)
+	nrecv := 0
+	for nrecv < nsent {
+		n, err := s2.Read(buf)
+		if err == nil {
+			received += string(buf[:n])
+			nrecv += n
+		} else {
+			t.Fatal("cannot read remain data", err)
+			break
+		}
+	}
+
+	if sent != received {
+		t.Fatal("data mimatch")
+	}
+
+	if _, err := s2.Read(buf); err == nil {
+		t.Fatal("no error after close and no remain data")
+	}
+}
 
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
