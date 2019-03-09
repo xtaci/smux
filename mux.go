@@ -40,9 +40,9 @@ func DefaultConfig() *Config {
 		KeepAliveInterval:  2500 * time.Millisecond,
 		KeepAliveTimeout:   7500 * time.Millisecond, // RTT usually < 7500ms
 		MaxFrameSize:       32768,
-		MaxReceiveBuffer:   16 * 1024 * 1024,
+		MaxReceiveBuffer:   4 * 1024 * 1024,
 		EnableStreamBuffer: true,
-		MaxStreamBuffer:    8 * 1024 * 1024,
+		MaxStreamBuffer:    200 * 8 * 1024,
 		BoostTimeout:       10 * time.Second,
 	}
 }

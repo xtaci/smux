@@ -468,7 +468,6 @@ func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	config.KeepAliveTimeout = 2 * time.Second
 	session, _ := Client(blockWriteCli, config)
 	time.Sleep(3 * time.Second)
-	//time.Sleep(time.Hour * 2)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}

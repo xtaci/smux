@@ -312,8 +312,7 @@ func (s *Session) recvLoop() {
 					s.gotACK <- struct{}{}
 				}
 			default:
-				s.Close()
-				return
+				// nop, for random noise or new feature cmd ID
 			}
 		} else {
 			s.Close()
