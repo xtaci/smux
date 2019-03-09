@@ -57,11 +57,6 @@ type Session struct {
 	writes chan writeRequest
 	writeCtrl chan writeRequest
 
-	EnableStreamBuffer bool
-	MaxReceiveBuffer int
-	MaxStreamBuffer int
-	BoostTimeout time.Duration
-
 	rttSn uint32
 	rttTest atomic.Value // time.Time
 	rtt atomic.Value // time.Duration
@@ -79,11 +74,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
 	s.writeCtrl = make(chan writeRequest, 1)
-
-	s.MaxReceiveBuffer = config.MaxReceiveBuffer
-	s.MaxStreamBuffer = config.MaxStreamBuffer
-	s.BoostTimeout = config.BoostTimeout
-	s.EnableStreamBuffer = config.EnableStreamBuffer
 
 	s.rtt.Store(500 * time.Millisecond)
 	s.gotACK = make(chan struct{}, 1)
@@ -264,8 +254,8 @@ func (s *Session) recvLoop() {
 
 			switch f.cmd {
 			case cmdNOP:
-				if s.EnableStreamBuffer {
-					s.writeFrameCtrl(newFrame(cmdACK, f.sid))
+				if s.config.EnableStreamBuffer {
+					s.writeFrameCtrl(newFrame(cmdACK, f.sid), time.After(s.config.KeepAliveTimeout))
 				}
 			case cmdSYN:
 				s.streamLock.Lock()
@@ -323,9 +313,10 @@ func (s *Session) recvLoop() {
 
 func (s *Session) keepalive() {
 	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
-	s.rttTest.Store(time.Now())
-	s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
 	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
+	s.rttTest.Store(time.Now())
+	s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), ckTimeout.C)
+
 
 	var stopT = func() {
 		t.Stop()
@@ -351,6 +342,8 @@ func (s *Session) keepalive() {
 				stopT()
 				return
 			}
+			t.Reset(s.config.KeepAliveInterval) // setup next ping
+			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // start timeout check
 
 		case <-s.gotACK: // setup next ping after got ACK
 			t.Reset(s.config.KeepAliveInterval) // setup next ping
@@ -359,7 +352,7 @@ func (s *Session) keepalive() {
 		case <-t.C: // send ping
 			t.Reset(s.config.KeepAliveTimeout + s.config.KeepAliveInterval) // setup next ping
 			s.rttTest.Store(time.Now())
-			s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))))
+			s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), ckTimeout.C)
 			s.notifyBucket() // force a signal to the recvLoop
 			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
 
@@ -441,7 +434,7 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 
 
 // must send but nerver block
-func (s *Session) writeFrameCtrl(f Frame) {
+func (s *Session) writeFrameCtrl(f Frame, deadline <-chan time.Time) {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
@@ -449,6 +442,7 @@ func (s *Session) writeFrameCtrl(f Frame) {
 	select {
 	case <-s.die:
 	case s.writeCtrl <- req:
+	case <-deadline:
 	}
 }
 

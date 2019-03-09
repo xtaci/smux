@@ -49,8 +49,8 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.bucketNotify = make(chan struct{}, 1)
 	s.empflag = int32(1)
 	s.countRead = int32(0)
-	s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
-	s.guessBucket = int32(s.sess.MaxStreamBuffer)
+	s.boostTimeout = time.Now().Add(s.sess.config.BoostTimeout)
+	s.guessBucket = int32(s.sess.config.MaxStreamBuffer)
 	s.lastWrite.Store(time.Now())
 	return s
 }
@@ -254,7 +254,7 @@ func (s *Stream) pushBytes(p []byte) {
 	s.buffer.Write(p)
 	s.bufferLock.Unlock()
 
-	if !s.sess.EnableStreamBuffer {
+	if !s.sess.config.EnableStreamBuffer {
 		return
 	}
 
@@ -263,7 +263,7 @@ func (s *Stream) pushBytes(p []byte) {
 	lastReadOut := atomic.SwapInt32(&s.countRead, int32(0))	// reset read
 
 	// hard limit
-	if used > int32(s.sess.MaxStreamBuffer) {
+	if used > int32(s.sess.config.MaxStreamBuffer) {
 		s.sendPause()
 		return
 	}
@@ -275,7 +275,7 @@ func (s *Stream) pushBytes(p []byte) {
 	}
 
 	if used <= s.guessBucket {
-		s.boostTimeout = time.Now().Add(s.sess.BoostTimeout)
+		s.boostTimeout = time.Now().Add(s.sess.config.BoostTimeout)
 		return
 	}
 
@@ -339,7 +339,7 @@ func (s *Stream) resumeWrite() {
 
 // returnTokens is called by stream to return token after read
 func (s *Stream) returnTokens(n int) {
-	if !s.sess.EnableStreamBuffer {
+	if !s.sess.config.EnableStreamBuffer {
 		return
 	}
 
@@ -358,14 +358,14 @@ func (s *Stream) returnTokens(n int) {
 // send cmdFUL to pause write
 func (s *Stream) sendPause() {
 	if atomic.CompareAndSwapInt32(&s.empflag, 1, 0) {
-		s.sess.writeFrameCtrl(newFrame(cmdFUL, s.id))
+		s.sess.writeFrameCtrl(newFrame(cmdFUL, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
 }
 
 // send cmdEMP to resume write
 func (s *Stream) sendResume() {
 	if atomic.CompareAndSwapInt32(&s.empflag, 0, 1) {
-		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), nil)
+		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
 }
 

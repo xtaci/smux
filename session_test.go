@@ -414,13 +414,13 @@ func testKeepAliveTimeout(t *testing.T, cli net.Conn) {
 	}
 }
 
-type blockWriteConn struct {
+type delayWriteConn struct {
 	net.Conn
+	Delay time.Duration
 }
 
-func (c *blockWriteConn) Write(b []byte) (n int, err error) {
-	forever := time.Hour * 24
-	time.Sleep(forever)
+func (c *delayWriteConn) Write(b []byte) (n int, err error) {
+	time.Sleep(c.Delay)
 	return c.Conn.Write(b)
 }
 
@@ -461,7 +461,7 @@ func TestKeepAliveBlockWriteTimeout3(t *testing.T) {
 
 func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	//when writeFrame block, keepalive in old version never timeout
-	blockWriteCli := &blockWriteConn{cli}
+	blockWriteCli := &delayWriteConn{cli, 24 * time.Hour}
 
 	config := DefaultConfig()
 	config.KeepAliveInterval = time.Second
@@ -470,6 +470,43 @@ func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	time.Sleep(3 * time.Second)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
+	}
+}
+
+func TestKeepAliveDelayWriteTimeout(t *testing.T) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testKeepAliveDelayWriteTimeout(t, c1, c2)
+}
+
+func TestKeepAliveDelayWriteTimeoutPipe(t *testing.T) {
+	c1, c2 := net.Pipe()
+	testKeepAliveDelayWriteTimeout(t, c1, c2)
+}
+
+func testKeepAliveDelayWriteTimeout(t *testing.T, c1 net.Conn, c2 net.Conn) {
+	defer c1.Close()
+	defer c2.Close()
+
+	configSrv := DefaultConfig()
+	configSrv.KeepAliveInterval = 23 * time.Hour // never send ping
+	configSrv.KeepAliveTimeout = 24 * time.Hour // never check
+	srv, _ := Server(c2, configSrv)
+	defer srv.Close()
+
+	// delay 200 ms, old KeepAlive will timeout
+	delayWriteCli := &delayWriteConn{c1, 200 * time.Millisecond}
+	//delayWriteCli := &delayWriteConn{c1, 24 * time.Hour}
+
+	config := DefaultConfig()
+	config.KeepAliveInterval = 200 * time.Millisecond // send @ 200ms
+	config.KeepAliveTimeout = 300 * time.Millisecond // should check after 300 ms (= 500 ms), not @ 300 ms
+	session, _ := Client(delayWriteCli, config)
+	time.Sleep(2 * time.Second)
+	if session.IsClosed() {
+		t.Fatal("keepalive-timeout failed, close too quickly")
 	}
 }
 
@@ -830,7 +867,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		config := DefaultConfig()
 		config.KeepAliveInterval = time.Second
 		config.KeepAliveTimeout = 2 * time.Second
-		session, _ = Client(&blockWriteConn{cli}, config)
+		session, _ = Client(&delayWriteConn{cli, 24 * time.Hour}, config)
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		c := make(chan time.Time)
 		go func() {
