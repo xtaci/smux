@@ -23,6 +23,7 @@ type Stream struct {
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
 	writeLock     sync.Mutex
+	writeFlag     int32
 
 	bucket         int32         // token bucket
 	bucketNotify   chan struct{} // used for waiting for tokens
@@ -134,10 +135,17 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	frames := s.split(b, cmdPSH, s.id)
 	sent := 0
-	if len(frames) > 1 {
+
+	// buggy
+	/*nfames := len(frames)
+	if atomic.AddInt32(&s.writeFlag, int32(nfames)) > 1 { // > 1 means multi-frame is writting, wait writting end
 		s.writeLock.Lock()
 		defer s.writeLock.Unlock()
 	}
+	defer atomic.AddInt32(&s.writeFlag, int32(-nfames))*/
+
+	s.writeLock.Lock()
+	defer s.writeLock.Unlock()
 	for k := range frames {
 		req := writeRequest{
 			frame:  frames[k],
@@ -378,11 +386,6 @@ func (s *Stream) sendResume() {
 		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 	}
 	s.empflagLock.Unlock()
-}
-
-func (s *Stream) sendResumeForce() {
-	atomic.StoreInt32(&s.empflag, 1)
-	s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
 }
 
 var errTimeout error = &timeoutError{}

@@ -1245,31 +1245,42 @@ func testReadZeroLengthBuffer(t *testing.T, srv net.Conn, cli net.Conn) {
 func TestWriteStreamRace(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxFrameSize = 1500
+	config.EnableStreamBuffer = true
+	config.MaxReceiveBuffer = 16 * 1024 * 1024
+	config.MaxStreamBuffer = config.MaxFrameSize * 8
 
 	s1, s2, err := getSmuxStreamPair(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriteStreamRace(t, s1, s2, config.MaxFrameSize * 4)
+	testWriteStreamRace(t, s1, s2, config.MaxFrameSize)
 }
 
 func TestWriteStreamRace2(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxFrameSize = 1500
+	config.EnableStreamBuffer = true
+	config.MaxReceiveBuffer = 16 * 1024 * 1024
+	config.MaxStreamBuffer = config.MaxFrameSize * 8
 
 	s1, s2, err := getSmuxStreamPairPipe(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriteStreamRace(t, s1, s2, config.MaxFrameSize * 4)
+	testWriteStreamRace(t, s1, s2, config.MaxFrameSize)
 }
 
-func TestWriteStreamRace3(t *testing.T) {
+func TestWriteStreamRaceTCP(t *testing.T) {
 	s1, s2, err := getTCPConnectionPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriteStreamRace(t, s1, s2, 8*1500) // tcp frame size == 1500 ?
+	testWriteStreamRace(t, s1, s2, 1500) // tcp frame size == 1500 ?
+}
+
+func TestWriteStreamRacePipe(t *testing.T) {
+	s1, s2 := net.Pipe()
+	testWriteStreamRace(t, s1, s2, 1500) // tcp frame size == 1500 ?
 }
 
 func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) {
@@ -1284,11 +1295,13 @@ func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) 
 		return buf
 	}
 
-	SIZE := frameSize
-	testMsg := [][]byte{
-		mkMsg('a', SIZE),
-		mkMsg('b', SIZE),
-		mkMsg('c', SIZE),
+	MAXSIZE := frameSize * 4
+	testMsg := map[byte][]byte{
+		'a': mkMsg('a', MAXSIZE),
+		'b': mkMsg('b', frameSize * 3),
+		'c': mkMsg('c', frameSize * 2),
+		'd': mkMsg('d', frameSize),
+		'e': mkMsg('e', frameSize / 2),
 	}
 
 	// Parallel Write(), data should not reorder in one Write() call
@@ -1297,35 +1310,37 @@ func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) 
 	for _, msg := range testMsg {
 		wg.Add(1)
 		go func(s net.Conn, msg []byte) {
+			defer wg.Done()
 			for { // keep write untill all stream end
 				select {
 				case <-die:
-					goto END
+					return
 				default:
 				}
-				s.Write(msg)
+				s.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+				_, err := s.Write(msg)
+				if err != nil {
+					//t.Fatal("write data error", err)
+					return
+				}
 			}
-		END:
-			s.Close()
-			wg.Done()
 		}(s1, msg)
 	}
 
 	// read and check data
-	const N = 100000
-	buf := make([]byte, SIZE, SIZE)
+	const N = 100 * 1000
+	buf := make([]byte, MAXSIZE, MAXSIZE)
 	for i := 0; i < N; i++ {
-		_, err := io.ReadFull(s2, buf[:])
+		_, err := io.ReadFull(s2, buf[:1])
+		if err != nil {
+			t.Fatal("cannot read data", err)
+			break
+		}
+		msg := testMsg[buf[0]]
+		n, err := io.ReadFull(s2, buf[1:len(msg)])
 		if err == nil {
-			ok := false
-			for _, msg := range testMsg {
-				if bytes.Compare(buf, msg) == 0 {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				t.Fatal("data mimatch", err)
+			if bytes.Compare(buf[:n+1], msg) != 0 {
+				t.Fatal("data mimatch", n, string(buf[0]))
 				break
 			}
 		} else {
@@ -1334,7 +1349,7 @@ func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) 
 		}
 	}
 	close(die)
-
+	wg.Wait()
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
