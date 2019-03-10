@@ -1242,6 +1242,101 @@ func testReadZeroLengthBuffer(t *testing.T, srv net.Conn, cli net.Conn) {
 	cli.Close()
 }
 
+func TestWriteStreamRace(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxFrameSize = 1500
+
+	s1, s2, err := getSmuxStreamPair(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriteStreamRace(t, s1, s2, config.MaxFrameSize * 4)
+}
+
+func TestWriteStreamRace2(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxFrameSize = 1500
+
+	s1, s2, err := getSmuxStreamPairPipe(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriteStreamRace(t, s1, s2, config.MaxFrameSize * 4)
+}
+
+func TestWriteStreamRace3(t *testing.T) {
+	s1, s2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriteStreamRace(t, s1, s2, 8*1500) // tcp frame size == 1500 ?
+}
+
+func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) {
+	defer s1.Close()
+	defer s2.Close()
+
+	mkMsg := func(char byte, size int) []byte {
+		buf := make([]byte, size, size)
+		for i := range buf {
+			buf[i] = char
+		}
+		return buf
+	}
+
+	SIZE := frameSize
+	testMsg := [][]byte{
+		mkMsg('a', SIZE),
+		mkMsg('b', SIZE),
+		mkMsg('c', SIZE),
+	}
+
+	// Parallel Write(), data should not reorder in one Write() call
+	die := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, msg := range testMsg {
+		wg.Add(1)
+		go func(s net.Conn, msg []byte) {
+			for { // keep write untill all stream end
+				select {
+				case <-die:
+					goto END
+				default:
+				}
+				s.Write(msg)
+			}
+		END:
+			s.Close()
+			wg.Done()
+		}(s1, msg)
+	}
+
+	// read and check data
+	const N = 100000
+	buf := make([]byte, SIZE, SIZE)
+	for i := 0; i < N; i++ {
+		_, err := io.ReadFull(s2, buf[:])
+		if err == nil {
+			ok := false
+			for _, msg := range testMsg {
+				if bytes.Compare(buf, msg) == 0 {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				t.Fatal("data mimatch", err)
+				break
+			}
+		} else {
+			t.Fatal("cannot read data", err)
+			break
+		}
+	}
+	close(die)
+
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
 	if err != nil {

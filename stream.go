@@ -22,6 +22,7 @@ type Stream struct {
 	dieLock       sync.Mutex
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+	writeLock     sync.Mutex
 
 	bucket         int32         // token bucket
 	bucketNotify   chan struct{} // used for waiting for tokens
@@ -80,15 +81,12 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 READ:
 	s.bufferLock.Lock()
-	n, err = s.buffer.Read(b)
-	rem := s.buffer.Len()
+	n, _ = s.buffer.Read(b)
 	s.bufferLock.Unlock()
 
 	if n > 0 {
 		s.sess.returnTokens(n)
 		s.returnTokens(n)
-		return n, nil
-	} else if rem > 0 {
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
@@ -96,7 +94,7 @@ READ:
 	}
 
 	if n == 0 {
-		s.sendResumeForce()
+		s.sendResume()
 	}
 
 	select {
@@ -136,6 +134,10 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	frames := s.split(b, cmdPSH, s.id)
 	sent := 0
+	if len(frames) > 1 {
+		s.writeLock.Lock()
+		defer s.writeLock.Unlock()
+	}
 	for k := range frames {
 		req := writeRequest{
 			frame:  frames[k],
@@ -180,7 +182,7 @@ func (s *Stream) Close() error {
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
-		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), time.After(s.sess.config.KeepAliveTimeout))
+		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), nil)
 		//s.sess.streamClosed(s.id)
 		return err
 	}
