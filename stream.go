@@ -93,7 +93,7 @@ READ:
 		return 0, io.EOF
 	}
 
-	if n == 0 {
+	if s.sess.config.EnableStreamBuffer {
 		s.sendResume()
 	}
 
