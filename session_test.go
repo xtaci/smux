@@ -280,20 +280,19 @@ func TestConcurrentClose(t *testing.T) {
 	}
 	defer stop()
 	session, _ := Client(cli, nil)
-	numStreams := 100
+	numStreams := 1000
 	streams := make([]*Stream, 0, numStreams)
-	var wg sync.WaitGroup
-	wg.Add(numStreams)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < numStreams; i++ {
 		stream, _ := session.OpenStream()
 		streams = append(streams, stream)
 	}
+	var wg sync.WaitGroup
 	for _, s := range streams {
-		stream := s
-		go func() {
+		wg.Add(1)
+		go func(stream *Stream) {
 			stream.Close()
 			wg.Done()
-		}()
+		}(s)
 	}
 	session.Close()
 	wg.Wait()

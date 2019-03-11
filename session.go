@@ -73,7 +73,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
-	s.writeCtrl = make(chan writeRequest, 1)
+	s.writeCtrl = make(chan writeRequest, 4)
 
 	s.rtt.Store(500 * time.Millisecond)
 	s.gotACK = make(chan struct{}, 1)
@@ -199,15 +199,16 @@ func (s *Session) SetDeadline(t time.Time) error {
 }
 
 // notify the session that a stream has closed
-func (s *Session) streamClosed(sid uint32) {
+func (s *Session) streamClosed(stream *Stream) {
 	s.streamLock.Lock()
-	if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
+	delete(s.streams, stream.id)
+	s.streamLock.Unlock()
+
+	if n := stream.recycleTokens(); n > 0 { // return remaining tokens to the bucket
 		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
 			s.notifyBucket()
 		}
 	}
-	delete(s.streams, sid)
-	s.streamLock.Unlock()
 }
 
 // returnTokens is called by stream to return token after read
@@ -379,6 +380,7 @@ func (s *Session) sendLoop() {
 		binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 		binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 		copy(buf[headerSize:], request.frame.data)
+		//s.conn.SetWriteDeadline(time.Now().Add(s.config.KeepAliveTimeout))
 		n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
 
 		n -= headerSize
@@ -402,7 +404,7 @@ func (s *Session) sendLoop() {
 			return
 		case req = <-s.writeCtrl:
 		case req = <-s.writes:
-			if len(s.writeCtrl) > 0 {
+			for len(s.writeCtrl) > 0 {
 				reqCtrl := <-s.writeCtrl
 				send(reqCtrl)
 			}
