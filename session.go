@@ -315,54 +315,60 @@ func (s *Session) recvLoop() {
 }
 
 func (s *Session) keepalive() {
-	t := time.NewTimer(s.config.KeepAliveInterval + s.config.KeepAliveTimeout)
-	ckTimeout := time.NewTimer(s.config.KeepAliveTimeout) // start timeout check
-	s.rttTest.Store(time.Now())
-	s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), ckTimeout.C)
 
-
-	var stopT = func() {
-		t.Stop()
-		select {
-		case <-t.C:
-		default:
-		}
+	timeout := s.config.KeepAliveTimeout
+	if !s.config.EnableStreamBuffer && s.config.KeepAliveInterval < s.config.KeepAliveTimeout {
+		timeout = s.config.KeepAliveInterval
 	}
 
-	var stopCk = func() {
-		ckTimeout.Stop()
-		select {
-		case <-ckTimeout.C:
-		default:
+	var ping = func(gotACK <-chan struct{}) bool {
+		ckTimeout := time.NewTimer(timeout) // setup timeout check
+		s.rttTest.Store(time.Now())
+		err := s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), ckTimeout.C)
+		if err != nil { // fail to send
+			s.Close()
+			return false
 		}
-	}
 
-	for {
 		select {
 		case <-ckTimeout.C: // should never trigger if no timeout
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
-				s.Close()
-				stopT()
+				s.Close() // timeout & not any frame recv
+				return false
+			}
+		case <-s.die:
+			return false
+		case <-gotACK: // got ACK
+		}
+		return true
+	}
+
+	if !s.config.EnableStreamBuffer {
+		for {
+			if !ping(nil) {
 				return
 			}
-			t.Reset(s.config.KeepAliveInterval) // setup next ping
-			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // start timeout check
-
-		case <-s.gotACK: // setup next ping after got ACK
-			t.Reset(s.config.KeepAliveInterval) // setup next ping
-			ckTimeout.Reset(s.config.KeepAliveInterval + s.config.KeepAliveTimeout) // reset timeout check
-
-		case <-t.C: // send ping
-			t.Reset(s.config.KeepAliveTimeout + s.config.KeepAliveInterval) // setup next ping
-			s.rttTest.Store(time.Now())
-			s.writeFrameCtrl(newFrame(cmdNOP, atomic.AddUint32(&s.rttSn, uint32(1))), ckTimeout.C)
 			s.notifyBucket() // force a signal to the recvLoop
-			ckTimeout.Reset(s.config.KeepAliveTimeout) // start timeout check
+		}
+		return
+	}
+
+	if !ping(s.gotACK) {
+		return
+	}
+	t := time.NewTimer(s.config.KeepAliveInterval)
+
+	for {
+		select {
+		case <-t.C: // send ping
+			//t.Stop()
+			if !ping(s.gotACK) {
+				return
+			}
+			s.notifyBucket() // force a signal to the recvLoop
+			t.Reset(s.config.KeepAliveInterval) // setup next ping
 
 		case <-s.die:
-			// clear all timer
-			stopT()
-			stopCk()
 			return
 		}
 	}
@@ -438,16 +444,19 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 
 
 // must send but nerver block
-func (s *Session) writeFrameCtrl(f Frame, deadline <-chan time.Time) {
+func (s *Session) writeFrameCtrl(f Frame, deadline <-chan time.Time) error {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
 	}
 	select {
 	case <-s.die:
+		return ErrBrokenPipe
 	case s.writeCtrl <- req:
 	case <-deadline:
+		return errTimeout
 	}
+	return nil
 }
 
 func (s *Session) writeFrameHalf(f Frame, deadline <-chan time.Time) (*writeRequest, error) {

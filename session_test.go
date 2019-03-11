@@ -1382,8 +1382,8 @@ func benchmarkAcceptClose(b *testing.B, cli net.Conn) {
 
 func BenchmarkConnSmux(b *testing.B) {
 	config := DefaultConfig()
-	config.KeepAliveInterval = 50 * time.Millisecond
-	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.KeepAliveInterval = 5000 * time.Millisecond
+	config.KeepAliveTimeout = 20000 * time.Millisecond
 	config.EnableStreamBuffer = false
 
 	cs, ss, err := getSmuxStreamPair(config)
@@ -1412,8 +1412,8 @@ func BenchmarkConnSmuxEnableStreamToken(b *testing.B) {
 
 func BenchmarkConnSmuxPipe(b *testing.B) {
 	config := DefaultConfig()
-	config.KeepAliveInterval = 50 * time.Millisecond
-	config.KeepAliveTimeout = 200 * time.Millisecond
+	config.KeepAliveInterval = 5000 * time.Millisecond
+	config.KeepAliveTimeout = 20000 * time.Millisecond
 	config.EnableStreamBuffer = false
 
 	cs, ss, err := getSmuxStreamPairPipe(config)
@@ -1538,7 +1538,10 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 		defer wg.Done()
 		count := 0
 		for {
-			n, _ := rd.Read(buf2)
+			n, err := rd.Read(buf2)
+			if err != nil {
+				b.Fatal("Read()", err)
+			}
 			count += n
 			if count == 128*1024*b.N {
 				return
