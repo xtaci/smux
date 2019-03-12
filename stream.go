@@ -180,7 +180,9 @@ func (s *Stream) Close() error {
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s)
+		s.writeLock.Lock()
 		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), nil)
+		s.writeLock.Unlock()
 		return err
 	}
 }
