@@ -987,6 +987,7 @@ func testSlowReadBlocking(t *testing.T, srv net.Conn, cli net.Conn) {
 		for {
 			if stream, err := session.AcceptStream(); err == nil {
 				go func(s io.ReadWriteCloser) {
+					defer s.Close()
 					buf := make([]byte, 1024 * 1024, 1024 * 1024)
 					for {
 						n, err := s.Read(buf)
@@ -1369,7 +1370,7 @@ func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
 		KeepAliveInterval:  10000 * time.Millisecond,
 		KeepAliveTimeout:   50000 * time.Millisecond,
 		MaxFrameSize:       1 * 1024,
-		MaxReceiveBuffer:   1 * 1024,
+		MaxReceiveBuffer:   2 * 1024,
 		EnableStreamBuffer: false,
 		MaxStreamBuffer:    4 * 1024,
 		BoostTimeout:       0 * time.Millisecond,
@@ -1381,8 +1382,9 @@ func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
 		for {
 			if stream, err := session.AcceptStream(); err == nil {
 				go func(s io.ReadWriteCloser) {
+					defer s.Close()
 					buf := make([]byte, 1024 * 1024, 1024 * 1024)
-					for {
+					for { // just echo
 						n, err := s.Read(buf)
 						if err != nil {
 							return
@@ -1400,11 +1402,13 @@ func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
 		sess.streamLock.Lock()
 		defer sess.streamLock.Unlock()
 
+		t.Logf("================\n")
 		t.Log("session.bucket", atomic.LoadInt32(&sess.bucket), "session.streams.len", len(sess.streams))
-		for sid, stream := range sess.streams {
-			t.Log("stream.id", sid, "stream.bucket", atomic.LoadInt32(&stream.bucket),
-				"stream.empflag", atomic.LoadInt32(&stream.empflag), "stream.fulflag", atomic.LoadInt32(&stream.fulflag))
+		for _, stream := range sess.streams {
+			t.Logf("id: %v, addr: %p, bucket: %v, empflag: %v, fulflag: %v\n",
+				stream.id, stream, atomic.LoadInt32(&stream.bucket), atomic.LoadInt32(&stream.empflag), atomic.LoadInt32(&stream.fulflag))
 		}
+		t.Logf("================\n")
 	}
 
 	flag := int32(1)
@@ -1423,20 +1427,20 @@ func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
 
 			const SIZE = 8 * 1024 // Bytes
 			const SPDW = 16 * 1024 * 1024 // Bytes/s
-			const SPDR = 16 * 1024 * 1024// Bytes/s
+			const SPDR = 16 * 1024 * 1024 // Bytes/s
 			const TestDtW = time.Second / time.Duration(SPDW/SIZE)
 			const TestDtR = time.Second / time.Duration(SPDR/SIZE)
 
 			var fwg sync.WaitGroup
 			fwg.Add(1)
-			go func() { // read = SPDR
+			go func() { // read
 				defer fwg.Done()
 				rbuf := make([]byte, SIZE, SIZE)
 				for atomic.LoadInt32(&flag) > 0 {
 					stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-					if _, err := stream.Read(rbuf); err != nil {
-						dumpSess(t, session)
+					if _, err := stream.Read(rbuf); err != nil { // should not timeout when write speed == read speed
 						dumpGoroutine(t)
+						dumpSess(t, session)
 						t.Fatal("read data error", err)
 						break
 					}
@@ -1449,7 +1453,7 @@ func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
 				buf[i] = byte('-')
 			}
 
-			for atomic.LoadInt32(&flag) > 0 { // write = SPDW
+			for atomic.LoadInt32(&flag) > 0 { // write
 				stream.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 				_, err := stream.Write(buf)
 				if err != nil {

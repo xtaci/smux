@@ -205,9 +205,7 @@ func (s *Session) streamClosed(stream *Stream) {
 	s.streamLock.Unlock()
 
 	if n := stream.recycleTokens(); n > 0 { // return remaining tokens to the bucket
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-			s.notifyBucket()
-		}
+		s.returnTokens(n)
 	}
 }
 
