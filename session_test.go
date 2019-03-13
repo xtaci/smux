@@ -1277,7 +1277,7 @@ func TestWriteStreamRaceTCP(t *testing.T) {
 	testWriteStreamRace(t, s1, s2, 1500) // tcp frame size == 1500 ?
 }
 
-func TestWriteStreamRacePipe(t *testing.T) {
+func TestWriteStreamRacePipe(t *testing.T) { // go v1.9.x won't pass
 	s1, s2 := net.Pipe()
 	testWriteStreamRace(t, s1, s2, 1500) // tcp frame size == 1500 ?
 }
@@ -1348,6 +1348,134 @@ func testWriteStreamRace(t *testing.T, s1 net.Conn, s2 net.Conn, frameSize int) 
 		}
 	}
 	close(die)
+	wg.Wait()
+}
+
+func TestSmallBufferReadWrite(t *testing.T) {
+	c1, c2, err := getTCPConnectionPair()
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+
+	testSmallBufferReadWrite(t, c1, c2)
+}
+
+func testSmallBufferReadWrite(t *testing.T, srv net.Conn, cli net.Conn) {
+	defer srv.Close()
+	defer cli.Close()
+
+	config := &Config{
+		KeepAliveInterval:  10000 * time.Millisecond,
+		KeepAliveTimeout:   50000 * time.Millisecond,
+		MaxFrameSize:       1 * 1024,
+		MaxReceiveBuffer:   1 * 1024,
+		EnableStreamBuffer: false,
+		MaxStreamBuffer:    4 * 1024,
+		BoostTimeout:       0 * time.Millisecond,
+	}
+
+
+	go func (conn net.Conn) { // echo server
+		session, _ := Server(conn, config)
+		for {
+			if stream, err := session.AcceptStream(); err == nil {
+				go func(s io.ReadWriteCloser) {
+					buf := make([]byte, 1024 * 1024, 1024 * 1024)
+					for {
+						n, err := s.Read(buf)
+						if err != nil {
+							return
+						}
+						s.Write(buf[:n])
+					}
+				}(stream)
+			} else {
+				return
+			}
+		}
+	}(srv)
+
+	var dumpSess = func (t *testing.T, sess *Session) {
+		sess.streamLock.Lock()
+		defer sess.streamLock.Unlock()
+
+		t.Log("session.bucket", atomic.LoadInt32(&sess.bucket), "session.streams.len", len(sess.streams))
+		for sid, stream := range sess.streams {
+			t.Log("stream.id", sid, "stream.bucket", atomic.LoadInt32(&stream.bucket),
+				"stream.empflag", atomic.LoadInt32(&stream.empflag), "stream.fulflag", atomic.LoadInt32(&stream.fulflag))
+		}
+	}
+
+	flag := int32(1)
+	var wg sync.WaitGroup
+
+	var test = func(session *Session) { // fast write & slow read
+		defer wg.Done()
+
+		stream, err := session.OpenStream()
+		if err == nil {
+			t.Log("[stream][start]", stream.id)
+			defer func() {
+				stream.Close()
+				t.Log("[stream][end]", stream.id)
+			}()
+
+			const SIZE = 8 * 1024 // Bytes
+			const SPDW = 16 * 1024 * 1024 // Bytes/s
+			const SPDR = 16 * 1024 * 1024// Bytes/s
+			const TestDtW = time.Second / time.Duration(SPDW/SIZE)
+			const TestDtR = time.Second / time.Duration(SPDR/SIZE)
+
+			var fwg sync.WaitGroup
+			fwg.Add(1)
+			go func() { // read = SPDR
+				defer fwg.Done()
+				rbuf := make([]byte, SIZE, SIZE)
+				for atomic.LoadInt32(&flag) > 0 {
+					stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+					if _, err := stream.Read(rbuf); err != nil {
+						dumpSess(t, session)
+						dumpGoroutine(t)
+						t.Fatal("read data error", err)
+						break
+					}
+					time.Sleep(TestDtR) // slow down read
+				}
+			}()
+
+			buf := make([]byte, SIZE, SIZE)
+			for i := range buf {
+				buf[i] = byte('-')
+			}
+
+			for atomic.LoadInt32(&flag) > 0 { // write = SPDW
+				stream.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+				_, err := stream.Write(buf)
+				if err != nil {
+					if strings.Contains(err.Error(), "i/o timeout") {
+						continue
+					}
+					dumpSess(t, session)
+					t.Fatal("write data error", err)
+					break
+				}
+				time.Sleep(TestDtW) // slow down write
+			}
+			fwg.Wait()
+		} else {
+			t.Fatal(err)
+		}
+	}
+
+	session, _ := Client(cli, config)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go test(session)
+	}
+
+	time.Sleep(5 * time.Second)
+	atomic.StoreInt32(&flag, int32(0))
 	wg.Wait()
 }
 
