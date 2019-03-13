@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Stream implements net.Conn
@@ -24,6 +22,19 @@ type Stream struct {
 	dieLock       sync.Mutex
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+	writeLock     sync.Mutex
+
+	bucket         int32         // token bucket
+	bucketNotify   chan struct{} // used for waiting for tokens
+	fulflag        int32
+	empflagLock    sync.Mutex
+	empflag        int32
+	countRead      int32         // for guess read speed
+	boostTimeout   time.Time      // for initial boost
+	guessBucket    int32         // for guess needed stream buffer size
+
+	lastWrite      atomic.Value
+	guessNeeded    int32
 }
 
 // newStream initiates a Stream struct
@@ -34,6 +45,14 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
+
+	s.bucket = int32(0)
+	s.bucketNotify = make(chan struct{}, 1)
+	s.empflag = int32(1)
+	s.countRead = int32(0)
+	s.boostTimeout = time.Now().Add(s.sess.config.BoostTimeout)
+	s.guessBucket = int32(s.sess.config.MaxStreamBuffer)
+	s.lastWrite.Store(time.Now())
 	return s
 }
 
@@ -47,7 +66,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		select {
 		case <-s.die:
-			return 0, errors.New(errBrokenPipe)
+			return 0, ErrBrokenPipe
 		default:
 			return 0, nil
 		}
@@ -67,10 +86,15 @@ READ:
 
 	if n > 0 {
 		s.sess.returnTokens(n)
+		s.returnTokens(n)
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
 		return 0, io.EOF
+	}
+
+	if s.sess.config.EnableStreamBuffer {
+		s.sendResume()
 	}
 
 	select {
@@ -79,7 +103,7 @@ READ:
 	case <-deadline:
 		return n, errTimeout
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, ErrBrokenPipe
 	}
 }
 
@@ -94,12 +118,24 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, ErrBrokenPipe
 	default:
+	}
+
+	if atomic.LoadInt32(&s.fulflag) == 1 {
+		select {
+		case <-s.bucketNotify:
+		case <-s.die:
+			return 0, ErrBrokenPipe
+		case <-deadline:
+			return 0, errTimeout
+		}
 	}
 
 	frames := s.split(b, cmdPSH, s.id)
 	sent := 0
+	s.writeLock.Lock()
+	defer s.writeLock.Unlock()
 	for k := range frames {
 		req := writeRequest{
 			frame:  frames[k],
@@ -109,7 +145,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		select {
 		case s.sess.writes <- req:
 		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
+			return sent, ErrBrokenPipe
 		case <-deadline:
 			return sent, errTimeout
 		}
@@ -121,7 +157,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				return sent, result.err
 			}
 		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
+			return sent, ErrBrokenPipe
 		case <-deadline:
 			return sent, errTimeout
 		}
@@ -136,12 +172,17 @@ func (s *Stream) Close() error {
 	select {
 	case <-s.die:
 		s.dieLock.Unlock()
-		return errors.New(errBrokenPipe)
+		if atomic.LoadInt32(&s.rstflag) == 1 {
+			return nil
+		}
+		return ErrBrokenPipe
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
-		s.sess.streamClosed(s.id)
-		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		s.sess.streamClosed(s)
+		s.writeLock.Lock()
+		_, err := s.sess.writeFrameInternal(newFrame(cmdFIN, s.id), nil)
+		s.writeLock.Unlock()
 		return err
 	}
 }
@@ -218,6 +259,35 @@ func (s *Stream) pushBytes(p []byte) {
 	s.bufferLock.Lock()
 	s.buffer.Write(p)
 	s.bufferLock.Unlock()
+
+	if !s.sess.config.EnableStreamBuffer {
+		return
+	}
+
+	n := len(p)
+	used := atomic.AddInt32(&s.bucket, int32(n))
+	lastReadOut := atomic.SwapInt32(&s.countRead, int32(0))	// reset read
+
+	// hard limit
+	if used > int32(s.sess.config.MaxStreamBuffer) {
+		s.sendPause()
+		return
+	}
+
+	if lastReadOut != 0 {
+		s.lastWrite.Store(time.Now())
+		needed := atomic.LoadInt32(&s.guessNeeded)
+		s.guessBucket = int32((int64(s.guessBucket) * 8 + int64(needed) * 2) / 10)
+	}
+
+	if used <= s.guessBucket {
+		s.boostTimeout = time.Now().Add(s.sess.config.BoostTimeout)
+		return
+	}
+
+	if time.Now().After(s.boostTimeout) {
+		s.sendPause()
+	}
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
@@ -257,6 +327,56 @@ func (s *Stream) notifyReadEvent() {
 // mark this stream has been reset
 func (s *Stream) markRST() {
 	atomic.StoreInt32(&s.rstflag, 1)
+}
+
+// mark this stream has been pause write
+func (s *Stream) pauseWrite() {
+	atomic.StoreInt32(&s.fulflag, 1)
+}
+
+// mark this stream has been resume write
+func (s *Stream) resumeWrite() {
+	atomic.StoreInt32(&s.fulflag, 0)
+	select {
+	case s.bucketNotify <- struct{}{}:
+	default:
+	}
+}
+
+// returnTokens is called by stream to return token after read
+func (s *Stream) returnTokens(n int) {
+	if !s.sess.config.EnableStreamBuffer {
+		return
+	}
+
+	used := atomic.AddInt32(&s.bucket, -int32(n))
+	totalRead := atomic.AddInt32(&s.countRead, int32(n))
+	lastWrite, _ := s.lastWrite.Load().(time.Time)
+	dt := time.Now().Sub(lastWrite) + 1
+	rtt := s.sess.rtt.Load().(time.Duration)
+	needed := totalRead * int32(rtt / dt)
+	atomic.StoreInt32(&s.guessNeeded, needed)
+	if used <= 0 || needed >= used {
+		s.sendResume()
+	}
+}
+
+// send cmdFUL to pause write
+func (s *Stream) sendPause() {
+	s.empflagLock.Lock()
+	if atomic.SwapInt32(&s.empflag, 0) == 1 {
+		s.sess.writeFrameCtrl(newFrame(cmdFUL, s.id), time.After(s.sess.config.KeepAliveTimeout))
+	}
+	s.empflagLock.Unlock()
+}
+
+// send cmdEMP to resume write
+func (s *Stream) sendResume() {
+	s.empflagLock.Lock()
+	if atomic.SwapInt32(&s.empflag, 1) == 0 {
+		s.sess.writeFrameHalf(newFrame(cmdEMP, s.id), time.After(s.sess.config.KeepAliveTimeout))
+	}
+	s.empflagLock.Unlock()
 }
 
 var errTimeout error = &timeoutError{}
