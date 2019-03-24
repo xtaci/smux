@@ -98,34 +98,24 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	default:
 	}
 
-	frames := s.split(b, cmdPSH, s.id)
+	// frame split and transmit
 	sent := 0
-	for k := range frames {
-		req := writeRequest{
-			frame:  frames[k],
-			result: make(chan writeResult, 1),
+	frame := newFrame(cmdPSH, s.id)
+	bts := b
+	for len(bts) > 0 {
+		sz := len(bts)
+		if sz > s.frameSize {
+			sz = s.frameSize
 		}
-
-		select {
-		case s.sess.writes <- req:
-		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
-		case <-deadline:
-			return sent, errTimeout
-		}
-
-		select {
-		case result := <-req.result:
-			sent += result.n
-			if result.err != nil {
-				return sent, result.err
-			}
-		case <-s.die:
-			return sent, errors.New(errBrokenPipe)
-		case <-deadline:
-			return sent, errTimeout
+		frame.data = bts[:sz]
+		bts = bts[sz:]
+		n, err := s.sess.writeFrameInternal(frame, deadline)
+		sent += n
+		if err != nil {
+			return sent, err
 		}
 	}
+
 	return sent, nil
 }
 
@@ -227,23 +217,6 @@ func (s *Stream) recycleTokens() (n int) {
 	s.buffer.Reset()
 	s.bufferLock.Unlock()
 	return
-}
-
-// split large byte buffer into smaller frames, reference only
-func (s *Stream) split(bts []byte, cmd byte, sid uint32) []Frame {
-	frames := make([]Frame, 0, len(bts)/s.frameSize+1)
-	for len(bts) > s.frameSize {
-		frame := newFrame(cmd, sid)
-		frame.data = bts[:s.frameSize]
-		bts = bts[s.frameSize:]
-		frames = append(frames, frame)
-	}
-	if len(bts) > 0 {
-		frame := newFrame(cmd, sid)
-		frame.data = bts
-		frames = append(frames, frame)
-	}
-	return frames
 }
 
 // notify read event
