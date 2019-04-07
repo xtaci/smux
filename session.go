@@ -3,7 +3,6 @@ package smux
 import (
 	"encoding/binary"
 	"io"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -327,7 +326,6 @@ func (s *Session) sendLoop() {
 				v[0] = buf[:headerSize]
 				v[1] = request.frame.data
 				n, err = bw.WriteBuffers(v)
-				log.Println("buffers")
 			} else {
 				copy(buf[headerSize:], request.frame.data)
 				n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
