@@ -3,6 +3,7 @@ package smux
 import (
 	"encoding/binary"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,10 @@ type writeRequest struct {
 type writeResult struct {
 	n   int
 	err error
+}
+
+type buffersWriter interface {
+	WriteBuffers(v [][]byte) (n int, err error)
 }
 
 // Session defines a multiplexed connection for streams
@@ -304,6 +309,10 @@ func (s *Session) keepalive() {
 
 func (s *Session) sendLoop() {
 	buf := make([]byte, (1<<16)+headerSize)
+	var n int
+	var err error
+	v := make([][]byte, 2) // vector for writing
+
 	for {
 		select {
 		case <-s.die:
@@ -313,8 +322,16 @@ func (s *Session) sendLoop() {
 			buf[1] = request.frame.cmd
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
-			copy(buf[headerSize:], request.frame.data)
-			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
+
+			if bw, ok := s.conn.(buffersWriter); ok {
+				v[0] = buf[:headerSize]
+				v[1] = request.frame.data
+				n, err = bw.WriteBuffers(v)
+				log.Println("buffers")
+			} else {
+				copy(buf[headerSize:], request.frame.data)
+				n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
+			}
 
 			n -= headerSize
 			if n < 0 {
