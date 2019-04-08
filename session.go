@@ -211,48 +211,29 @@ func (s *Session) returnTokens(n int) {
 	}
 }
 
-// session read a frame from underlying connection
-// it's data is pointed to the input buffer
-func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
-	var hdr rawHeader
-	if _, err := io.ReadFull(s.conn, hdr[:]); err != nil {
-		return f, errors.Wrap(err, "readFrame")
-	}
-
-	if hdr.Version() != version {
-		return f, errors.New(errInvalidProtocol)
-	}
-
-	f.ver = hdr.Version()
-	f.cmd = hdr.Cmd()
-	f.sid = hdr.StreamID()
-	if length := hdr.Length(); length > 0 {
-		f.data = buffer[:length]
-		if _, err := io.ReadFull(s.conn, f.data); err != nil {
-			return f, errors.Wrap(err, "readFrame")
-		}
-	}
-	return f, nil
-}
-
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
-	buffer := make([]byte, 1<<16)
+	var hdr rawHeader
+
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
 			<-s.bucketNotify
 		}
 
-		if f, err := s.readFrame(buffer); err == nil {
+		// read header first
+		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
+			if hdr.Version() != version { // just ignore
+				continue
+			}
 			atomic.StoreInt32(&s.dataReady, 1)
-
-			switch f.cmd {
+			sid := hdr.StreamID()
+			switch hdr.Cmd() {
 			case cmdNOP:
 			case cmdSYN:
 				s.streamLock.Lock()
-				if _, ok := s.streams[f.sid]; !ok {
-					stream := newStream(f.sid, s.config.MaxFrameSize, s)
-					s.streams[f.sid] = stream
+				if _, ok := s.streams[sid]; !ok {
+					stream := newStream(sid, s.config.MaxFrameSize, s)
+					s.streams[sid] = stream
 					select {
 					case s.chAccepts <- stream:
 					case <-s.die:
@@ -261,19 +242,27 @@ func (s *Session) recvLoop() {
 				s.streamLock.Unlock()
 			case cmdFIN:
 				s.streamLock.Lock()
-				if stream, ok := s.streams[f.sid]; ok {
+				if stream, ok := s.streams[sid]; ok {
 					stream.markRST()
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
 			case cmdPSH:
+				var written int64
+				var err error
 				s.streamLock.Lock()
-				if stream, ok := s.streams[f.sid]; ok {
-					atomic.AddInt32(&s.bucket, -int32(len(f.data)))
-					stream.pushBytes(f.data)
+				if stream, ok := s.streams[sid]; ok {
+					written, err = stream.receiveBytes(s.conn, int64(hdr.Length()))
+					atomic.AddInt32(&s.bucket, -int32(written))
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
+
+				// read data error
+				if err != nil {
+					s.Close()
+					return
+				}
 			default:
 				s.Close()
 				return

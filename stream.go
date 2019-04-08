@@ -16,7 +16,7 @@ type Stream struct {
 	id            uint32
 	rstflag       int32
 	sess          *Session
-	buffer        bytes.Buffer
+	buffer        *bytes.Buffer
 	bufferLock    sync.Mutex
 	frameSize     int
 	chReadEvent   chan struct{} // notify a read event
@@ -34,6 +34,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
+	s.buffer = new(bytes.Buffer)
 	return s
 }
 
@@ -203,11 +204,12 @@ func (s *Stream) RemoteAddr() net.Addr {
 	return nil
 }
 
-// pushBytes a slice into buffer
-func (s *Stream) pushBytes(p []byte) {
+// receiveBytes receive from the reader and write into the buffer
+func (s *Stream) receiveBytes(r io.Reader, sz int64) (written int64, err error) {
 	s.bufferLock.Lock()
-	s.buffer.Write(p)
+	written, err = io.CopyN(s.buffer, r, sz)
 	s.bufferLock.Unlock()
+	return
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
