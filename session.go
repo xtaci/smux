@@ -152,7 +152,6 @@ func (s *Session) Close() (err error) {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		s.notifyBucket()
 		return s.conn.Close()
 	}
 }
@@ -217,7 +216,11 @@ func (s *Session) recvLoop() {
 
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
-			<-s.bucketNotify
+			select {
+			case <-s.bucketNotify:
+			case <-s.die:
+				return
+			}
 		}
 
 		// read header first
