@@ -3,6 +3,7 @@ package smux
 import (
 	"encoding/binary"
 	"io"
+	"io/ioutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -258,6 +259,8 @@ func (s *Session) recvLoop() {
 					written, err = stream.receiveBytes(s.conn, int64(hdr.Length()))
 					atomic.AddInt32(&s.bucket, -int32(written))
 					stream.notifyReadEvent()
+				} else { // discard
+					io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
 				}
 				s.streamLock.Unlock()
 
