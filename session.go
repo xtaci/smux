@@ -113,9 +113,14 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 
 	s.streamLock.Lock()
-	s.streams[sid] = stream
-	s.streamLock.Unlock()
-	return stream, nil
+	defer s.streamLock.Unlock()
+	select {
+	case <-s.die:
+		return nil, errors.New(errBrokenPipe)
+	default:
+		s.streams[sid] = stream
+		return stream, nil
+	}
 }
 
 // AcceptStream is used to block until the next available stream
