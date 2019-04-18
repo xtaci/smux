@@ -147,13 +147,14 @@ func (s *Session) Close() (err error) {
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
+		err = s.conn.Close()
 		s.dieLock.Unlock()
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		return s.conn.Close()
+		return
 	}
 }
 
