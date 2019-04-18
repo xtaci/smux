@@ -260,7 +260,7 @@ func (s *Session) recvLoop() {
 					atomic.AddInt32(&s.bucket, -int32(written))
 					stream.notifyReadEvent()
 				} else { // discard
-					io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
+					written, err = io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
 				}
 				s.streamLock.Unlock()
 
