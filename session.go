@@ -152,8 +152,8 @@ func (s *Session) Close() (err error) {
 		return errors.New(errBrokenPipe)
 	default:
 		close(s.die)
-		err = s.conn.Close()
 		s.dieLock.Unlock()
+		err = s.conn.Close()
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
@@ -232,10 +232,11 @@ func (s *Session) recvLoop() {
 
 		// read header first
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
-			if hdr.Version() != version { // just ignore
-				continue
-			}
 			atomic.StoreInt32(&s.dataReady, 1)
+			if hdr.Version() != version {
+				s.Close()
+				return
+			}
 			sid := hdr.StreamID()
 			switch hdr.Cmd() {
 			case cmdNOP:
