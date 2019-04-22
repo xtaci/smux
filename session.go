@@ -309,10 +309,18 @@ func (s *Session) keepalive() {
 }
 
 func (s *Session) sendLoop() {
-	buf := make([]byte, (1<<16)+headerSize)
+	var buf []byte
 	var n int
 	var err error
-	v := make([][]byte, 2) // vector for writing
+	var vec [][]byte // vector for writeBuffers
+
+	bw, ok := s.conn.(buffersWriter)
+	if ok {
+		buf = make([]byte, headerSize)
+		vec = make([][]byte, 2)
+	} else {
+		buf = make([]byte, (1<<16)+headerSize)
+	}
 
 	for {
 		select {
@@ -324,10 +332,10 @@ func (s *Session) sendLoop() {
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 
-			if bw, ok := s.conn.(buffersWriter); ok {
-				v[0] = buf[:headerSize]
-				v[1] = request.frame.data
-				n, err = bw.WriteBuffers(v)
+			if len(vec) > 0 {
+				vec[0] = buf[:headerSize]
+				vec[1] = request.frame.data
+				n, err = bw.WriteBuffers(vec)
 			} else {
 				copy(buf[headerSize:], request.frame.data)
 				n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
