@@ -259,15 +259,17 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			case cmdPSH:
-				var written int64
+				var written int
 				var err error
 				s.streamLock.Lock()
 				if stream, ok := s.streams[sid]; ok {
-					written, err = stream.receiveBytes(s.conn, int64(hdr.Length()))
-					atomic.AddInt32(&s.bucket, -int32(written))
-					stream.notifyReadEvent()
+					if hdr.Length() > 0 {
+						written, err = stream.receiveBytes(s.conn, int(hdr.Length()))
+						atomic.AddInt32(&s.bucket, -int32(written))
+						stream.notifyReadEvent()
+					}
 				} else { // discard
-					written, err = io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
+					_, err = io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
 				}
 				s.streamLock.Unlock()
 
