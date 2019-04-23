@@ -226,6 +226,7 @@ func (s *Stream) recycleTokens() (n int) {
 	for k := range s.buffers {
 		total += len(s.buffers[k])
 	}
+	s.buffers = nil
 	s.bufferLock.Unlock()
 	return total
 }
