@@ -209,26 +209,23 @@ func (s *Stream) RemoteAddr() net.Addr {
 	return nil
 }
 
-// receiveBytes receive from the reader and write into the buffer
-func (s *Stream) receiveBytes(r io.Reader, sz int) (written int, err error) {
-	newbuf := make([]byte, sz)
-	written, err = io.ReadFull(r, newbuf)
+// pushBytes append buf to buffers
+func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
-	s.buffers = append(s.buffers, newbuf)
+	s.buffers = append(s.buffers, buf)
 	s.bufferLock.Unlock()
 	return
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
 func (s *Stream) recycleTokens() (n int) {
-	total := 0
 	s.bufferLock.Lock()
 	for k := range s.buffers {
-		total += len(s.buffers[k])
+		n += len(s.buffers[k])
 	}
 	s.buffers = nil
 	s.bufferLock.Unlock()
-	return total
+	return
 }
 
 // notify read event

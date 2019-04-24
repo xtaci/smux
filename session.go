@@ -3,7 +3,6 @@ package smux
 import (
 	"encoding/binary"
 	"io"
-	"io/ioutil"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -259,24 +258,20 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			case cmdPSH:
-				var written int
-				var err error
-				s.streamLock.Lock()
-				if stream, ok := s.streams[sid]; ok {
-					if hdr.Length() > 0 {
-						written, err = stream.receiveBytes(s.conn, int(hdr.Length()))
-						atomic.AddInt32(&s.bucket, -int32(written))
-						stream.notifyReadEvent()
+				if hdr.Length() > 0 {
+					newbuf := make([]byte, hdr.Length())
+					if written, err := io.ReadFull(s.conn, newbuf); err == nil {
+						s.streamLock.Lock()
+						if stream, ok := s.streams[sid]; ok {
+							stream.pushBytes(newbuf)
+							atomic.AddInt32(&s.bucket, -int32(written))
+							stream.notifyReadEvent()
+						}
+						s.streamLock.Unlock()
+					} else {
+						s.Close()
+						return
 					}
-				} else { // discard
-					_, err = io.CopyN(ioutil.Discard, s.conn, int64(hdr.Length()))
-				}
-				s.streamLock.Unlock()
-
-				// read data error
-				if err != nil {
-					s.Close()
-					return
 				}
 			default:
 				s.Close()
