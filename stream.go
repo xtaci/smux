@@ -220,8 +220,8 @@ func (s *Stream) receiveBytes(r io.Reader, sz int) (written int, err error) {
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
-func (s *Stream) recycleTokens() (n int) {
-	total := 0
+func (s *Stream) recycleTokens() (total int) {
+	total = 0
 	s.bufferLock.Lock()
 	for k := range s.buffers {
 		total += len(s.buffers[k])
