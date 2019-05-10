@@ -639,7 +639,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		close(c)
 		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		_, err := session.writeFrameInternal(f, c)
-		if err != errTimeout {
+		if !strings.Contains(err.Error(), "timeout") {
 			t.Fatal("write frame with deadline failed", err)
 		}
 	}
@@ -664,8 +664,8 @@ func TestWriteFrameInternal(t *testing.T) {
 			close(c)
 		}()
 		_, err = session.writeFrameInternal(f, c)
-		if err.Error() != errBrokenPipe {
-			t.Fatal("write frame with deadline failed", err)
+		if !strings.Contains(err.Error(), "closed pipe") {
+			t.Fatal("write frame with to closed conn failed", err)
 		}
 	}
 }
@@ -688,7 +688,7 @@ func TestReadDeadline(t *testing.T) {
 		}
 	}
 	if readErr != nil {
-		if !strings.Contains(readErr.Error(), "i/o timeout") {
+		if !strings.Contains(readErr.Error(), "timeout") {
 			t.Fatalf("Wrong error: %v", readErr)
 		}
 	} else {
@@ -710,7 +710,7 @@ func TestWriteDeadline(t *testing.T) {
 	for {
 		stream.SetWriteDeadline(time.Now().Add(-1 * time.Minute))
 		if _, writeErr = stream.Write(buf); writeErr != nil {
-			if !strings.Contains(writeErr.Error(), "i/o timeout") {
+			if !strings.Contains(writeErr.Error(), "timeout") {
 				t.Fatalf("Wrong error: %v", writeErr)
 			}
 			break

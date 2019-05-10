@@ -46,7 +46,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		select {
 		case <-s.die:
-			return 0, errors.New(errBrokenPipe)
+			return 0, errors.WithStack(io.ErrClosedPipe)
 		default:
 			return 0, nil
 		}
@@ -76,16 +76,16 @@ READ:
 		return n, nil
 	} else if atomic.LoadInt32(&s.rstflag) == 1 {
 		_ = s.Close()
-		return 0, io.EOF
+		return 0, errors.WithStack(io.EOF)
 	}
 
 	select {
 	case <-s.chReadEvent:
 		goto READ
 	case <-deadline:
-		return n, errTimeout
+		return n, errors.WithStack(errTimeout)
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, errors.WithStack(io.ErrClosedPipe)
 	}
 }
 
@@ -100,7 +100,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, errors.WithStack(io.ErrClosedPipe)
 	default:
 	}
 
@@ -118,7 +118,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		n, err := s.sess.writeFrameInternal(frame, deadline)
 		sent += n
 		if err != nil {
-			return sent, err
+			return sent, errors.WithStack(err)
 		}
 	}
 
@@ -132,13 +132,13 @@ func (s *Stream) Close() error {
 	select {
 	case <-s.die:
 		s.dieLock.Unlock()
-		return errors.New(errBrokenPipe)
+		return errors.WithStack(io.ErrClosedPipe)
 	default:
 		close(s.die)
 		s.dieLock.Unlock()
 		s.sess.streamClosed(s.id)
 		_, err := s.sess.writeFrame(newFrame(cmdFIN, s.id))
-		return err
+		return errors.WithStack(err)
 	}
 }
 
@@ -169,10 +169,10 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // A zero time value disables the deadlines.
 func (s *Stream) SetDeadline(t time.Time) error {
 	if err := s.SetReadDeadline(t); err != nil {
-		return err
+		return errors.WithStack(err)
 	}
 	if err := s.SetWriteDeadline(t); err != nil {
-		return err
+		return errors.WithStack(err)
 	}
 	return nil
 }
@@ -240,11 +240,3 @@ func (s *Stream) notifyReadEvent() {
 func (s *Stream) markRST() {
 	atomic.StoreInt32(&s.rstflag, 1)
 }
-
-var errTimeout error = &timeoutError{}
-
-type timeoutError struct{}
-
-func (e *timeoutError) Error() string   { return "i/o timeout" }
-func (e *timeoutError) Timeout() bool   { return true }
-func (e *timeoutError) Temporary() bool { return true }

@@ -14,10 +14,10 @@ const (
 	defaultAcceptBacklog = 1024
 )
 
-const (
-	errBrokenPipe      = "broken pipe"
-	errInvalidProtocol = "invalid protocol version"
-	errGoAway          = "stream id overflows, should start a new connection"
+var (
+	errInvalidProtocol = errors.New("invalid protocol")
+	errGoAway          = errors.New("stream id overflows, should start a new connection")
+	errTimeout         = errors.New("timeout")
 )
 
 type writeRequest struct {
@@ -48,8 +48,10 @@ type Session struct {
 	streams    map[uint32]*Stream // all streams in this session
 	streamLock sync.Mutex         // locks streams
 
-	die       chan struct{} // flag session has died
-	dieLock   sync.Mutex
+	die         chan struct{} // flag session has died
+	dieOnce     sync.Once
+	socketError atomic.Value // errors from underlying conn
+
 	chAccepts chan *Stream
 
 	dataReady int32 // flag data has arrived
@@ -86,14 +88,14 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
 	if s.IsClosed() {
-		return nil, errors.New(errBrokenPipe)
+		return nil, errors.WithStack(io.ErrClosedPipe)
 	}
 
 	// generate stream id
 	s.nextStreamIDLock.Lock()
 	if s.goAway > 0 {
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.New(errGoAway)
+		return nil, errors.WithStack(errGoAway)
 	}
 
 	s.nextStreamID += 2
@@ -101,21 +103,25 @@ func (s *Session) OpenStream() (*Stream, error) {
 	if sid == sid%2 { // stream-id overflows
 		s.goAway = 1
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.New(errGoAway)
+		return nil, errors.WithStack(errGoAway)
 	}
 	s.nextStreamIDLock.Unlock()
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
 	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
-		return nil, errors.Wrap(err, "writeFrame")
+		return nil, errors.WithStack(err)
 	}
 
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	select {
 	case <-s.die:
-		return nil, errors.New(errBrokenPipe)
+		if err := s.socketError.Load(); err != nil {
+			return nil, errors.WithStack(err.(error))
+		} else {
+			return nil, errors.WithStack(io.ErrClosedPipe)
+		}
 	default:
 		s.streams[sid] = stream
 		return stream, nil
@@ -135,31 +141,40 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-deadline:
-		return nil, errTimeout
+		return nil, errors.WithStack(errTimeout)
 	case <-s.die:
-		return nil, errors.New(errBrokenPipe)
+		if err := s.socketError.Load(); err != nil {
+			return nil, errors.WithStack(err.(error))
+		} else {
+			return nil, errors.WithStack(io.ErrClosedPipe)
+		}
 	}
 }
 
 // Close is used to close the session and all streams.
-func (s *Session) Close() (err error) {
-	s.dieLock.Lock()
-
-	select {
-	case <-s.die:
-		s.dieLock.Unlock()
-		return errors.New(errBrokenPipe)
-	default:
-		close(s.die)
-		s.dieLock.Unlock()
-		err = s.conn.Close()
+func (s *Session) Close() error {
+	var once bool
+	s.dieOnce.Do(func() {
+		if err := s.conn.Close(); err != nil {
+			s.socketError.Store(errors.WithStack(err))
+		}
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		return
+		close(s.die)
+	})
+
+	if err := s.socketError.Load(); err != nil {
+		return errors.WithStack(err.(error))
 	}
+
+	if !once {
+		return errors.WithStack(io.ErrClosedPipe)
+	}
+
+	return nil
 }
 
 // notifyBucket notifies recvLoop that bucket is available
@@ -269,15 +284,18 @@ func (s *Session) recvLoop() {
 						}
 						s.streamLock.Unlock()
 					} else {
+						s.socketError.Store(errors.WithStack(err))
 						s.Close()
 						return
 					}
 				}
 			default:
+				s.socketError.Store(errors.WithStack(errInvalidProtocol))
 				s.Close()
 				return
 			}
 		} else {
+			s.socketError.Store(errors.WithStack(err))
 			s.Close()
 			return
 		}
@@ -345,11 +363,18 @@ func (s *Session) sendLoop() {
 
 			result := writeResult{
 				n:   n,
-				err: err,
+				err: errors.WithStack(err),
 			}
 
 			request.result <- result
 			close(request.result)
+
+			// store conn error
+			if err != nil {
+				s.socketError.Store(errors.WithStack(err))
+				s.Close()
+				return
+			}
 		}
 	}
 }
@@ -368,18 +393,18 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 	}
 	select {
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, errors.WithStack(io.ErrClosedPipe)
 	case s.writes <- req:
 	case <-deadline:
-		return 0, errTimeout
+		return 0, errors.WithStack(errTimeout)
 	}
 
 	select {
 	case result := <-req.result:
-		return result.n, result.err
+		return result.n, errors.WithStack(result.err)
 	case <-deadline:
-		return 0, errTimeout
+		return 0, errors.WithStack(errTimeout)
 	case <-s.die:
-		return 0, errors.New(errBrokenPipe)
+		return 0, errors.WithStack(io.ErrClosedPipe)
 	}
 }
