@@ -168,19 +168,18 @@ func (s *Session) AcceptStream() (*Stream, error) {
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
 	var once bool
-	var err error
 	s.dieOnce.Do(func() {
-		err = s.conn.Close()
+		close(s.die)
+		once = true
+	})
+
+	if once {
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
 		}
 		s.streamLock.Unlock()
-		close(s.die)
-	})
-
-	if once {
-		return err
+		return s.conn.Close()
 	} else {
 		return errors.WithStack(io.ErrClosedPipe)
 	}
