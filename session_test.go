@@ -5,13 +5,22 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func init() {
+	go func() {
+		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
+	}()
+}
 
 // setupServer starts new server listening on a random localhost port and
 // returns address of the server, function to stop the server, new client
@@ -820,6 +829,7 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	buf2 := make([]byte, 128*1024)
 	b.SetBytes(128 * 1024)
 	b.ResetTimer()
+	b.ReportAllocs()
 
 	var wg sync.WaitGroup
 	wg.Add(1)

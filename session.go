@@ -48,9 +48,21 @@ type Session struct {
 	streams    map[uint32]*Stream // all streams in this session
 	streamLock sync.Mutex         // locks streams
 
-	die         chan struct{} // flag session has died
-	dieOnce     sync.Once
-	socketError atomic.Value // errors from underlying conn
+	die     chan struct{} // flag session has died
+	dieOnce sync.Once
+
+	// socket error handling
+	socketReadError      atomic.Value
+	socketWriteError     atomic.Value
+	chSocketReadError    chan struct{}
+	chSocketWriteError   chan struct{}
+	socketReadErrorOnce  sync.Once
+	socketWriteErrorOnce sync.Once
+
+	// smux protocol errors
+	protoError     atomic.Value
+	chProtoError   chan struct{}
+	protoErrorOnce sync.Once
 
 	chAccepts chan *Stream
 
@@ -73,6 +85,9 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.writes = make(chan writeRequest)
+	s.chSocketReadError = make(chan struct{})
+	s.chSocketWriteError = make(chan struct{})
+	s.chProtoError = make(chan struct{})
 
 	if client {
 		s.nextStreamID = 1
@@ -116,12 +131,10 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	select {
+	case <-s.chSocketWriteError:
+		return nil, s.socketWriteError.Load().(error)
 	case <-s.die:
-		if err := s.socketError.Load(); err != nil {
-			return nil, errors.WithStack(err.(error))
-		} else {
-			return nil, errors.WithStack(io.ErrClosedPipe)
-		}
+		return nil, errors.WithStack(io.ErrClosedPipe)
 	default:
 		s.streams[sid] = stream
 		return stream, nil
@@ -137,27 +150,27 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		defer timer.Stop()
 		deadline = timer.C
 	}
+
 	select {
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-deadline:
 		return nil, errors.WithStack(errTimeout)
+	case <-s.chSocketReadError:
+		return nil, s.socketReadError.Load().(error)
+	case <-s.chProtoError:
+		return nil, s.protoError.Load().(error)
 	case <-s.die:
-		if err := s.socketError.Load(); err != nil {
-			return nil, errors.WithStack(err.(error))
-		} else {
-			return nil, errors.WithStack(io.ErrClosedPipe)
-		}
+		return nil, errors.WithStack(io.ErrClosedPipe)
 	}
 }
 
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
 	var once bool
+	var err error
 	s.dieOnce.Do(func() {
-		if err := s.conn.Close(); err != nil {
-			s.socketError.Store(errors.WithStack(err))
-		}
+		err = s.conn.Close()
 		s.streamLock.Lock()
 		for k := range s.streams {
 			s.streams[k].sessionClose()
@@ -166,15 +179,11 @@ func (s *Session) Close() error {
 		close(s.die)
 	})
 
-	if err := s.socketError.Load(); err != nil {
-		return errors.WithStack(err.(error))
-	}
-
-	if !once {
+	if once {
+		return err
+	} else {
 		return errors.WithStack(io.ErrClosedPipe)
 	}
-
-	return nil
 }
 
 // notifyBucket notifies recvLoop that bucket is available
@@ -183,6 +192,27 @@ func (s *Session) notifyBucket() {
 	case s.bucketNotify <- struct{}{}:
 	default:
 	}
+}
+
+func (s *Session) notifyReadError(err error) {
+	s.socketReadErrorOnce.Do(func() {
+		s.socketReadError.Store(err)
+		close(s.chSocketReadError)
+	})
+}
+
+func (s *Session) notifyWriteError(err error) {
+	s.socketWriteErrorOnce.Do(func() {
+		s.socketWriteError.Store(err)
+		close(s.chSocketWriteError)
+	})
+}
+
+func (s *Session) notifyProtoError(err error) {
+	s.protoErrorOnce.Do(func() {
+		s.protoError.Store(err)
+		close(s.chProtoError)
+	})
 }
 
 // IsClosed does a safe check to see if we have shutdown
@@ -248,7 +278,7 @@ func (s *Session) recvLoop() {
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
 			if hdr.Version() != version {
-				s.Close()
+				s.notifyProtoError(errors.WithStack(errInvalidProtocol))
 				return
 			}
 			sid := hdr.StreamID()
@@ -268,7 +298,7 @@ func (s *Session) recvLoop() {
 			case cmdFIN:
 				s.streamLock.Lock()
 				if stream, ok := s.streams[sid]; ok {
-					stream.markRST()
+					stream.fin()
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
@@ -284,19 +314,16 @@ func (s *Session) recvLoop() {
 						}
 						s.streamLock.Unlock()
 					} else {
-						s.socketError.Store(errors.WithStack(err))
-						s.Close()
+						s.notifyReadError(errors.WithStack(err))
 						return
 					}
 				}
 			default:
-				s.socketError.Store(errors.WithStack(errInvalidProtocol))
-				s.Close()
+				s.notifyProtoError(errors.WithStack(errInvalidProtocol))
 				return
 			}
 		} else {
-			s.socketError.Store(errors.WithStack(err))
-			s.Close()
+			s.notifyReadError(errors.WithStack(err))
 			return
 		}
 	}
@@ -371,8 +398,7 @@ func (s *Session) sendLoop() {
 
 			// store conn error
 			if err != nil {
-				s.socketError.Store(errors.WithStack(err))
-				s.Close()
+				s.notifyWriteError(errors.WithStack(err))
 				return
 			}
 		}
@@ -392,9 +418,11 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 		result: make(chan writeResult, 1),
 	}
 	select {
+	case s.writes <- req:
 	case <-s.die:
 		return 0, errors.WithStack(io.ErrClosedPipe)
-	case s.writes <- req:
+	case <-s.chSocketWriteError:
+		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
 		return 0, errors.WithStack(errTimeout)
 	}
@@ -402,9 +430,11 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, e
 	select {
 	case result := <-req.result:
 		return result.n, errors.WithStack(result.err)
-	case <-deadline:
-		return 0, errors.WithStack(errTimeout)
 	case <-s.die:
 		return 0, errors.WithStack(io.ErrClosedPipe)
+	case <-s.chSocketWriteError:
+		return 0, s.socketWriteError.Load().(error)
+	case <-deadline:
+		return 0, errors.WithStack(errTimeout)
 	}
 }
