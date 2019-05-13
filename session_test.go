@@ -197,6 +197,19 @@ func TestCloseThenOpen(t *testing.T) {
 	}
 }
 
+func TestSessionDoubleClose(t *testing.T) {
+	_, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	session.Close()
+	if err := session.Close(); err == nil {
+		t.Fatal("session double close doesn't return error")
+	}
+}
+
 func TestStreamDoubleClose(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
@@ -207,7 +220,7 @@ func TestStreamDoubleClose(t *testing.T) {
 	stream, _ := session.OpenStream()
 	stream.Close()
 	if err := stream.Close(); err == nil {
-		t.Log("double close doesn't return error")
+		t.Fatal("stream double close doesn't return error")
 	}
 	session.Close()
 }
