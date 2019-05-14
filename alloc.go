@@ -36,7 +36,7 @@ func (alloc *Allocator) Get(size int) []byte {
 	}
 
 	bits := msb(size)
-	if size <= 1<<bits {
+	if size == 1<<bits {
 		return alloc.buffers[bits].Get().([]byte)[:size]
 	} else {
 		return alloc.buffers[bits+1].Get().([]byte)[:size]
