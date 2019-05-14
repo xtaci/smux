@@ -3,6 +3,7 @@ package smux
 import (
 	"encoding/binary"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -238,6 +239,26 @@ func (s *Session) NumStreams() int {
 // A zero time value disables the deadline.
 func (s *Session) SetDeadline(t time.Time) error {
 	s.deadline.Store(t)
+	return nil
+}
+
+// LocalAddr satisfies net.Conn interface
+func (s *Session) LocalAddr() net.Addr {
+	if ts, ok := s.conn.(interface {
+		LocalAddr() net.Addr
+	}); ok {
+		return ts.LocalAddr()
+	}
+	return nil
+}
+
+// RemoteAddr satisfies net.Conn interface
+func (s *Session) RemoteAddr() net.Addr {
+	if ts, ok := s.conn.(interface {
+		RemoteAddr() net.Addr
+	}); ok {
+		return ts.RemoteAddr()
+	}
 	return nil
 }
 
