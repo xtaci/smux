@@ -12,9 +12,12 @@ import (
 
 // Stream implements net.Conn
 type Stream struct {
-	id         uint32
-	sess       *Session
-	buffers    [][]byte
+	id   uint32
+	sess *Session
+
+	buffers [][]byte
+	heads   [][]byte // slice heads kept for recycle
+
 	bufferLock sync.Mutex
 	frameSize  int
 
@@ -65,6 +68,9 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 			if len(s.buffers[0]) == 0 {
 				s.buffers[0] = nil
 				s.buffers = s.buffers[1:]
+				// full recycle
+				defaultAllocator.Put(s.heads[0])
+				s.heads = s.heads[1:]
 			}
 		}
 		s.bufferLock.Unlock()
@@ -217,6 +223,7 @@ func (s *Stream) RemoteAddr() net.Addr {
 func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
+	s.heads = append(s.heads, buf)
 	s.bufferLock.Unlock()
 	return
 }
@@ -226,8 +233,10 @@ func (s *Stream) recycleTokens() (n int) {
 	s.bufferLock.Lock()
 	for k := range s.buffers {
 		n += len(s.buffers[k])
+		defaultAllocator.Put(s.heads[k])
 	}
 	s.buffers = nil
+	s.heads = nil
 	s.bufferLock.Unlock()
 	return
 }
