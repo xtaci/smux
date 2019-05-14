@@ -109,6 +109,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		deadline = timer.C
 	}
 
+	// check if stream has closed
 	select {
 	case <-s.die:
 		return 0, errors.WithStack(io.ErrClosedPipe)
