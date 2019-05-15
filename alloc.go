@@ -55,11 +55,10 @@ func (alloc *Allocator) Put(buf []byte) error {
 // msb return the pos of most significiant bit
 func msb(size int) uint16 {
 	var pos uint16
-	for {
+	size >>= 1
+	for size > 0 {
 		size >>= 1
-		if size == 0 {
-			return pos
-		}
 		pos++
 	}
+	return pos
 }

@@ -1,6 +1,9 @@
 package smux
 
-import "testing"
+import (
+	"math/rand"
+	"testing"
+)
 
 func TestAllocGet(t *testing.T) {
 	alloc := NewAllocator()
@@ -68,5 +71,11 @@ func TestAllocPutThenGet(t *testing.T) {
 		if newData[k] != 99 {
 			t.Fatal("cannot fetch written []bytes from pool")
 		}
+	}
+}
+
+func BenchmarkMSB(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		msb(rand.Int())
 	}
 }
