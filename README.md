@@ -21,7 +21,7 @@ Smux ( **S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It
 
 ## Features
 
-1. Tiny, less than 600 LOC.
+1. Tiny, less than 1000 LOC.
 2. ***Token bucket*** controlled receiving, which provides smoother bandwidth graph(see picture below).
 3. Session-wide receive buffer, shared among streams, tightly controlled overall memory usage.
 4. Minimized header(8Bytes), maximized payload. 
@@ -37,6 +37,20 @@ For complete documentation, see the associated [Godoc](https://godoc.org/github.
 
 ```
 VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)  
+
+VALUES FOR LATEST VERSION:
+VERSION:
+    1
+    
+CMD:
+    cmdSYN(0)
+    cmdFIN(1)
+    cmdPSH(2)
+    cmdNOP(3)
+    
+STREAMID:
+    client use odd numbers starts from 1
+    server use even numbers starts from 0
 ```
 
 ## Usage
