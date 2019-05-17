@@ -55,8 +55,6 @@ STREAMID:
 
 ## Usage
 
-The API of smux are mostly taken from [yamux](https://github.com/hashicorp/yamux)
-
 ```go
 
 func client() {
@@ -80,6 +78,8 @@ func client() {
 
     // Stream implements io.ReadWriteCloser
     stream.Write([]byte("ping"))
+    stream.Close()
+    session.Close()
 }
 
 func server() {
@@ -104,6 +104,8 @@ func server() {
     // Listen for a message
     buf := make([]byte, 4)
     stream.Read(buf)
+    stream.Close()
+    session.Close()
 }
 
 ```
