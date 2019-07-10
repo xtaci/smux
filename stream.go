@@ -84,14 +84,13 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		var deadline <-chan time.Time
 		if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
 			timer = time.NewTimer(time.Until(d))
+			defer timer.Stop()
 			deadline = timer.C
 		}
 
 		select {
 		case <-s.chReadEvent:
-			if timer != nil {
-				timer.Stop()
-			}
+			continue
 		case <-s.chFinEvent:
 			return 0, errors.WithStack(io.EOF)
 		case <-s.sess.chSocketReadError:
