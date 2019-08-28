@@ -61,16 +61,10 @@ func TestAllocPut(t *testing.T) {
 func TestAllocPutThenGet(t *testing.T) {
 	alloc := NewAllocator()
 	data := alloc.Get(4)
-	for k := range data {
-		data[k] = 99
-	}
 	alloc.Put(data)
-
 	newData := alloc.Get(4)
-	for k := range newData {
-		if newData[k] != 99 {
-			t.Fatal("cannot fetch written []bytes from pool")
-		}
+	if cap(data) != cap(newData) {
+		t.Fatal("different cap while alloc.Get()")
 	}
 }
 
