@@ -33,7 +33,6 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
-			tb.Error(err)
 			return
 		}
 		go handleConnection(conn)
