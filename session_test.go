@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -25,7 +26,7 @@ func init() {
 // setupServer starts new server listening on a random localhost port and
 // returns address of the server, function to stop the server, new client
 // connection to this server or an error.
-func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, err error) {
+func setupServer(tb testing.TB, metadata ...byte) (addr string, stopfunc func(), client net.Conn, err error) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		return "", nil, nil, err
@@ -35,7 +36,7 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 		if err != nil {
 			return
 		}
-		go handleConnection(conn)
+		go handleConnection(tb, conn, metadata...)
 	}()
 	addr = ln.Addr().String()
 	conn, err := net.Dial("tcp", addr)
@@ -46,10 +47,13 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 	return ln.Addr().String(), func() { ln.Close() }, conn, nil
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(tb testing.TB, conn net.Conn, metadata ...byte) {
 	session, _ := Server(conn, nil)
 	for {
 		if stream, err := session.AcceptStream(); err == nil {
+			if !bytes.Equal(metadata, stream.Metadata()) {
+				tb.Fatal("metadata mismatch")
+			}
 			go func(s io.ReadWriteCloser) {
 				buf := make([]byte, 65536)
 				for {
@@ -64,6 +68,18 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 	}
+}
+
+func TestMetadata(t *testing.T) {
+	metadata := []byte("hello, world")
+	_, stop, cli, err := setupServer(t, metadata...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	session.OpenStream(metadata...)
+	session.Close()
 }
 
 func TestEcho(t *testing.T) {

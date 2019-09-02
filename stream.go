@@ -12,8 +12,9 @@ import (
 
 // Stream implements net.Conn
 type Stream struct {
-	id   uint32
-	sess *Session
+	id       uint32
+	metadata []byte
+	sess     *Session
 
 	buffers [][]byte
 	heads   [][]byte // slice heads kept for recycle
@@ -38,9 +39,10 @@ type Stream struct {
 }
 
 // newStream initiates a Stream struct
-func newStream(id uint32, frameSize int, sess *Session) *Stream {
+func newStream(id uint32, metadata []byte, frameSize int, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
+	s.metadata = metadata
 	s.chReadEvent = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
@@ -52,6 +54,11 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 // ID returns the unique stream ID.
 func (s *Stream) ID() uint32 {
 	return s.id
+}
+
+// Metadata returns stream metadata which was provided when opening stream.
+func (s *Stream) Metadata() []byte {
+	return s.metadata
 }
 
 // Read implements net.Conn

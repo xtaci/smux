@@ -102,7 +102,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 }
 
 // OpenStream is used to create a new stream
-func (s *Session) OpenStream() (*Stream, error) {
+func (s *Session) OpenStream(metadata ...byte) (*Stream, error) {
 	if s.IsClosed() {
 		return nil, errors.WithStack(io.ErrClosedPipe)
 	}
@@ -123,9 +123,11 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 	s.nextStreamIDLock.Unlock()
 
-	stream := newStream(sid, s.config.MaxFrameSize, s)
+	stream := newStream(sid, metadata, s.config.MaxFrameSize, s)
 
-	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
+	frame := newFrame(cmdSYN, sid)
+	frame.data = metadata
+	if _, err := s.writeFrame(frame); err != nil {
 		return nil, errors.WithStack(err)
 	}
 
@@ -307,7 +309,16 @@ func (s *Session) recvLoop() {
 			case cmdSYN:
 				s.streamLock.Lock()
 				if _, ok := s.streams[sid]; !ok {
-					stream := newStream(sid, s.config.MaxFrameSize, s)
+					var newbuf []byte
+					if hdr.Length() > 0 {
+						newbuf = defaultAllocator.Get(int(hdr.Length()))
+						if _, err := io.ReadFull(s.conn, newbuf); err != nil {
+							s.notifyReadError(errors.WithStack(err))
+							s.streamLock.Unlock()
+							return
+						}
+					}
+					stream := newStream(sid, append([]byte(nil), newbuf...), s.config.MaxFrameSize, s)
 					s.streams[sid] = stream
 					select {
 					case s.chAccepts <- stream:
