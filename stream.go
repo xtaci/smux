@@ -35,6 +35,9 @@ type Stream struct {
 	// deadlines
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+
+	// count writes
+	numWrite uint64
 }
 
 // newStream initiates a Stream struct
@@ -132,7 +135,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		}
 		frame.data = bts[:sz]
 		bts = bts[sz:]
-		n, err := s.sess.writeFrameInternal(frame, deadline)
+		n, err := s.sess.writeFrameInternal(frame, deadline, s.numWrite)
+		s.numWrite++
 		sent += n
 		if err != nil {
 			return sent, errors.WithStack(err)

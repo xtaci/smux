@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"container/heap"
 	"encoding/binary"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ var (
 )
 
 type writeRequest struct {
+	prio   uint64
 	frame  Frame
 	result chan writeResult
 }
@@ -73,6 +75,7 @@ type Session struct {
 
 	deadline atomic.Value
 
+	shaper chan writeRequest // a shaper for writing
 	writes chan writeRequest
 }
 
@@ -85,6 +88,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
+	s.shaper = make(chan writeRequest)
 	s.writes = make(chan writeRequest)
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
@@ -95,6 +99,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	} else {
 		s.nextStreamID = 0
 	}
+
+	go s.shaperLoop()
 	go s.recvLoop()
 	go s.sendLoop()
 	go s.keepalive()
@@ -357,7 +363,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C)
+			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C, 0)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -366,6 +372,33 @@ func (s *Session) keepalive() {
 			}
 		case <-s.die:
 			return
+		}
+	}
+}
+
+// shaper shapes the sending sequence among streams
+func (s *Session) shaperLoop() {
+	var reqs shaperHeap
+	var next writeRequest
+	var chWrite chan writeRequest
+
+	for {
+		if len(reqs) > 0 {
+			chWrite = s.writes
+			next = heap.Pop(&reqs).(writeRequest)
+		} else {
+			chWrite = nil
+		}
+
+		select {
+		case <-s.die:
+			return
+		case r := <-s.shaper:
+			if chWrite != nil { // next is valid, reshape
+				heap.Push(&reqs, next)
+			}
+			heap.Push(&reqs, r)
+		case chWrite <- next:
 		}
 	}
 }
@@ -428,17 +461,17 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameInternal(f, nil)
+	return s.writeFrameInternal(f, nil, 0)
 }
 
 // internal writeFrame version to support deadline used in keepalive
-func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time) (int, error) {
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio uint64) (int, error) {
 	req := writeRequest{
 		frame:  f,
 		result: make(chan writeResult, 1),
 	}
 	select {
-	case s.writes <- req:
+	case s.shaper <- req:
 	case <-s.die:
 		return 0, errors.WithStack(io.ErrClosedPipe)
 	case <-s.chSocketWriteError:
