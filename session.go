@@ -172,6 +172,11 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
+// Accept Returns a generic ReadWriteCloser instead of smux.Stream
+func (s *Session) Accept() (io.ReadWriteCloser, error) {
+	return s.AcceptStream()
+}
+
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
 	var once bool
