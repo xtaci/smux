@@ -148,6 +148,11 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 }
 
+// Open returns a generic ReadWriteCloser
+func (s *Session) Open() (io.ReadWriteCloser, error) {
+	return s.OpenStream()
+}
+
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
