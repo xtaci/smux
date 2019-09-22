@@ -17,9 +17,9 @@ const (
 )
 
 var (
-	errInvalidProtocol = errors.New("invalid protocol")
-	errGoAway          = errors.New("stream id overflows, should start a new connection")
-	errTimeout         = errors.New("timeout")
+	ErrInvalidProtocol = errors.New("invalid protocol")
+	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
+	ErrTimeout         = errors.New("timeout")
 )
 
 type writeRequest struct {
@@ -117,7 +117,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.nextStreamIDLock.Lock()
 	if s.goAway > 0 {
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.WithStack(errGoAway)
+		return nil, errors.WithStack(ErrGoAway)
 	}
 
 	s.nextStreamID += 2
@@ -125,7 +125,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	if sid == sid%2 { // stream-id overflows
 		s.goAway = 1
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.WithStack(errGoAway)
+		return nil, errors.WithStack(ErrGoAway)
 	}
 	s.nextStreamIDLock.Unlock()
 
@@ -167,7 +167,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-deadline:
-		return nil, errors.WithStack(errTimeout)
+		return nil, errors.WithStack(ErrTimeout)
 	case <-s.chSocketReadError:
 		return nil, s.socketReadError.Load().(error)
 	case <-s.chProtoError:
@@ -314,7 +314,7 @@ func (s *Session) recvLoop() {
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
 			if hdr.Version() != version {
-				s.notifyProtoError(errors.WithStack(errInvalidProtocol))
+				s.notifyProtoError(errors.WithStack(ErrInvalidProtocol))
 				return
 			}
 			sid := hdr.StreamID()
@@ -355,7 +355,7 @@ func (s *Session) recvLoop() {
 					}
 				}
 			default:
-				s.notifyProtoError(errors.WithStack(errInvalidProtocol))
+				s.notifyProtoError(errors.WithStack(ErrInvalidProtocol))
 				return
 			}
 		} else {
@@ -488,7 +488,7 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio ui
 	case <-s.chSocketWriteError:
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
-		return 0, errors.WithStack(errTimeout)
+		return 0, errors.WithStack(ErrTimeout)
 	}
 
 	select {
@@ -499,6 +499,6 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio ui
 	case <-s.chSocketWriteError:
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
-		return 0, errors.WithStack(errTimeout)
+		return 0, errors.WithStack(ErrTimeout)
 	}
 }

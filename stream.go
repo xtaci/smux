@@ -101,7 +101,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		case <-s.sess.chProtoError:
 			return 0, s.sess.protoError.Load().(error)
 		case <-deadline:
-			return n, errors.WithStack(errTimeout)
+			return n, errors.WithStack(ErrTimeout)
 		case <-s.die:
 			return 0, errors.WithStack(io.ErrClosedPipe)
 		}
