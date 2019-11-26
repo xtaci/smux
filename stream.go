@@ -104,8 +104,8 @@ func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
 		if buf != nil {
 			nw, ew := w.Write(buf)
 			defaultAllocator.Put(buf)
+			s.sess.returnTokens(len(buf))
 			if nw > 0 {
-				s.sess.returnTokens(nw)
 				n += int64(nw)
 			}
 
