@@ -83,29 +83,65 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 			return n, nil
 		}
 
-		var timer *time.Timer
-		var deadline <-chan time.Time
-		if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-			timer = time.NewTimer(time.Until(d))
-			defer timer.Stop()
-			deadline = timer.C
-		}
-
-		select {
-		case <-s.chReadEvent:
-			continue
-		case <-s.chFinEvent:
-			return 0, errors.WithStack(io.EOF)
-		case <-s.sess.chSocketReadError:
-			return 0, s.sess.socketReadError.Load().(error)
-		case <-s.sess.chProtoError:
-			return 0, s.sess.protoError.Load().(error)
-		case <-deadline:
-			return n, errors.WithStack(ErrTimeout)
-		case <-s.die:
-			return 0, errors.WithStack(io.ErrClosedPipe)
+		if ew := s.waitRead(); ew != nil {
+			return 0, ew
 		}
 	}
+}
+
+// WriteTo implements io.WriteTo
+func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
+	for {
+		var buf []byte
+		s.bufferLock.Lock()
+		if len(s.buffers) > 0 {
+			buf = s.buffers[0]
+			s.buffers = s.buffers[1:]
+			s.heads = s.heads[1:]
+		}
+		s.bufferLock.Unlock()
+
+		if buf != nil {
+			nw, ew := w.Write(buf)
+			defaultAllocator.Put(buf)
+			if nw > 0 {
+				s.sess.returnTokens(nw)
+				n += int64(nw)
+			}
+
+			if ew != nil {
+				return n, ew
+			}
+		} else if ew := s.waitRead(); ew != nil {
+			return n, ew
+		}
+	}
+}
+
+func (s *Stream) waitRead() error {
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer = time.NewTimer(time.Until(d))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
+	select {
+	case <-s.chReadEvent:
+		return nil
+	case <-s.chFinEvent:
+		return errors.WithStack(io.EOF)
+	case <-s.sess.chSocketReadError:
+		return s.sess.socketReadError.Load().(error)
+	case <-s.sess.chProtoError:
+		return s.sess.protoError.Load().(error)
+	case <-deadline:
+		return errors.WithStack(ErrTimeout)
+	case <-s.die:
+		return errors.WithStack(io.ErrClosedPipe)
+	}
+
 }
 
 // Write implements net.Conn
