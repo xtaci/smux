@@ -340,7 +340,7 @@ func (s *Session) recvLoop() {
 				s.streamLock.Unlock()
 			case cmdPSH:
 				if hdr.Length() > 0 {
-					newbuf := make([]byte, hdr.Length())
+					newbuf := defaultAllocator.Get(int(hdr.Length()))
 					if written, err := io.ReadFull(s.conn, newbuf); err == nil {
 						s.streamLock.Lock()
 						if stream, ok := s.streams[sid]; ok {
