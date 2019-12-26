@@ -657,7 +657,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, cmdSYN, 1000)
+		f := newFrame(cmdSYN, 1000)
 		session.writeFrame(f)
 	}
 	cli.Close()
@@ -670,7 +670,7 @@ func TestRandomFrame(t *testing.T) {
 	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		session.writeFrame(f)
 	}
 	cli.Close()
@@ -682,7 +682,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		session.writeFrame(f)
 	}
 	cli.Close()
@@ -694,7 +694,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		f.ver = byte(rand.Uint32())
 		session.writeFrame(f)
 	}
@@ -707,7 +707,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 	session, _ = Client(cli, nil)
 
-	f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+	f := newFrame(byte(rand.Uint32()), rand.Uint32())
 	rnd := make([]byte, rand.Uint32()%1024)
 	io.ReadFull(crand.Reader, rnd)
 	f.data = rnd
@@ -731,7 +731,7 @@ func TestRandomFrame(t *testing.T) {
 	//close first
 	session.Close()
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		session.writeFrame(f)
 	}
 }
@@ -760,7 +760,7 @@ func TestWriteFrameInternal(t *testing.T) {
 	//close first
 	session.Close()
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout), 0)
 	}
 
@@ -772,14 +772,14 @@ func TestWriteFrameInternal(t *testing.T) {
 	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
-		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout), 0)
 	}
 	//deadline occur
 	{
 		c := make(chan time.Time)
 		close(c)
-		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
+		f := newFrame(allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		_, err := session.writeFrameInternal(f, c, 0)
 		if !strings.Contains(err.Error(), "timeout") {
 			t.Fatal("write frame with deadline failed", err)
@@ -796,7 +796,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		config.KeepAliveInterval = time.Second
 		config.KeepAliveTimeout = 2 * time.Second
 		session, _ = Client(&blockWriteConn{cli}, config)
-		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
+		f := newFrame(byte(rand.Uint32()), rand.Uint32())
 		c := make(chan time.Time)
 		go func() {
 			//die first, deadline second, better for coverage

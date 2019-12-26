@@ -175,7 +175,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	// frame split and transmit
 	sent := 0
-	frame := newFrame(s.sess.config.Version, cmdPSH, s.id)
+	frame := newFrame(cmdPSH, s.id)
 	bts := b
 	for len(bts) > 0 {
 		sz := len(bts)
@@ -205,7 +205,7 @@ func (s *Stream) Close() error {
 	})
 
 	if once {
-		_, err = s.sess.writeFrame(newFrame(s.sess.config.Version, cmdFIN, s.id))
+		_, err = s.sess.writeFrame(newFrame(cmdFIN, s.id))
 		s.sess.streamClosed(s.id)
 		return err
 	} else {

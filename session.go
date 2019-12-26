@@ -141,7 +141,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
-	if _, err := s.writeFrame(newFrame(s.config.Version, cmdSYN, sid)); err != nil {
+	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
 		return nil, err
 	}
 
@@ -367,7 +367,7 @@ func (s *Session) recvLoop() {
 		// read header first
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
-			if hdr.Version() != s.config.Version {
+			if hdr.Version() != version {
 				s.notifyProtoError(ErrInvalidProtocol)
 				return
 			}
@@ -427,7 +427,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(s.config.Version, cmdNOP, 0), tickerPing.C, 0)
+			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C, 0)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
