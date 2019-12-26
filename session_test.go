@@ -67,6 +67,52 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+// setupServer starts new server listening on a random localhost port and
+// returns address of the server, function to stop the server, new client
+// connection to this server or an error.
+func setupServerV2(tb testing.TB) (addr string, stopfunc func(), client net.Conn, err error) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		return "", nil, nil, err
+	}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handleConnectionV2(conn)
+	}()
+	addr = ln.Addr().String()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		ln.Close()
+		return "", nil, nil, err
+	}
+	return ln.Addr().String(), func() { ln.Close() }, conn, nil
+}
+
+func handleConnectionV2(conn net.Conn) {
+	config := DefaultConfig()
+	config.Version = 2
+	session, _ := Server(conn, config)
+	for {
+		if stream, err := session.AcceptStream(); err == nil {
+			go func(s io.ReadWriteCloser) {
+				buf := make([]byte, 65536)
+				for {
+					n, err := s.Read(buf)
+					if err != nil {
+						return
+					}
+					s.Write(buf[:n])
+				}
+			}(stream)
+		} else {
+			return
+		}
+	}
+}
+
 func TestEcho(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
@@ -278,6 +324,40 @@ func TestParallel(t *testing.T) {
 	}
 	defer stop()
 	session, _ := Client(cli, nil)
+
+	par := 1000
+	messages := 100
+	var wg sync.WaitGroup
+	wg.Add(par)
+	for i := 0; i < par; i++ {
+		stream, _ := session.OpenStream()
+		go func(s *Stream) {
+			buf := make([]byte, 20)
+			for j := 0; j < messages; j++ {
+				msg := fmt.Sprintf("hello%v", j)
+				s.Write([]byte(msg))
+				if _, err := s.Read(buf); err != nil {
+					break
+				}
+			}
+			s.Close()
+			wg.Done()
+		}(stream)
+	}
+	t.Log("created", session.NumStreams(), "streams")
+	wg.Wait()
+	session.Close()
+}
+
+func TestParallelV2(t *testing.T) {
+	config := DefaultConfig()
+	config.Version = 2
+	_, stop, cli, err := setupServerV2(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, config)
 
 	par := 1000
 	messages := 100
