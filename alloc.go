@@ -1,9 +1,8 @@
 package smux
 
 import (
+	"errors"
 	"sync"
-
-	"github.com/pkg/errors"
 )
 
 var defaultAllocator *Allocator

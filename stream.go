@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Stream implements net.Conn
@@ -59,33 +57,48 @@ func (s *Stream) ID() uint32 {
 
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
+	for {
+		n, err = s.TryRead(b)
+		if err == ErrWouldBlock {
+			if ew := s.waitRead(); ew != nil {
+				return 0, ew
+			}
+		} else {
+			return n, err
+		}
+	}
+}
+
+// TryRead is the nonblocking version of Read
+func (s *Stream) TryRead(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
 
-	for {
-		s.bufferLock.Lock()
-		if len(s.buffers) > 0 {
-			n = copy(b, s.buffers[0])
-			s.buffers[0] = s.buffers[0][n:]
-			if len(s.buffers[0]) == 0 {
-				s.buffers[0] = nil
-				s.buffers = s.buffers[1:]
-				// full recycle
-				defaultAllocator.Put(s.heads[0])
-				s.heads = s.heads[1:]
-			}
+	s.bufferLock.Lock()
+	if len(s.buffers) > 0 {
+		n = copy(b, s.buffers[0])
+		s.buffers[0] = s.buffers[0][n:]
+		if len(s.buffers[0]) == 0 {
+			s.buffers[0] = nil
+			s.buffers = s.buffers[1:]
+			// full recycle
+			defaultAllocator.Put(s.heads[0])
+			s.heads = s.heads[1:]
 		}
-		s.bufferLock.Unlock()
+	}
+	s.bufferLock.Unlock()
 
-		if n > 0 {
-			s.sess.returnTokens(n)
-			return n, nil
-		}
+	if n > 0 {
+		s.sess.returnTokens(n)
+		return n, nil
+	}
 
-		if ew := s.waitRead(); ew != nil {
-			return 0, ew
-		}
+	select {
+	case <-s.die:
+		return 0, io.EOF
+	default:
+		return 0, ErrWouldBlock
 	}
 }
 
@@ -131,15 +144,15 @@ func (s *Stream) waitRead() error {
 	case <-s.chReadEvent:
 		return nil
 	case <-s.chFinEvent:
-		return errors.WithStack(io.EOF)
+		return io.EOF
 	case <-s.sess.chSocketReadError:
 		return s.sess.socketReadError.Load().(error)
 	case <-s.sess.chProtoError:
 		return s.sess.protoError.Load().(error)
 	case <-deadline:
-		return errors.WithStack(ErrTimeout)
+		return ErrTimeout
 	case <-s.die:
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 
 }
@@ -156,7 +169,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	// check if stream has closed
 	select {
 	case <-s.die:
-		return 0, errors.WithStack(io.ErrClosedPipe)
+		return 0, io.ErrClosedPipe
 	default:
 	}
 
@@ -175,7 +188,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		s.numWrite++
 		sent += n
 		if err != nil {
-			return sent, errors.WithStack(err)
+			return sent, err
 		}
 	}
 
@@ -196,7 +209,7 @@ func (s *Stream) Close() error {
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 }
 
@@ -227,10 +240,10 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // A zero time value disables the deadlines.
 func (s *Stream) SetDeadline(t time.Time) error {
 	if err := s.SetReadDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	if err := s.SetWriteDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	return nil
 }
@@ -263,6 +276,10 @@ func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
 	s.heads = append(s.heads, buf)
+	// Edge-Trigger
+	if len(s.buffers) == 1 {
+		s.sess.notifyPoll(s)
+	}
 	s.bufferLock.Unlock()
 	return
 }

@@ -5,11 +5,10 @@
 package smux
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Config is used to tune the Smux session

@@ -95,6 +95,54 @@ func TestEcho(t *testing.T) {
 	session.Close()
 }
 
+func TestPoll(t *testing.T) {
+	_, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+
+	const N = 100
+	var received int
+
+	tx := make([]byte, 128)
+	go func() {
+		for i := 0; i < N; i++ {
+			stream.Write(tx)
+		}
+	}()
+
+	buf := make([]byte, 128)
+	events := make([]*Stream, 128)
+	for {
+		n, err := session.PollWait(events)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for i := 0; i < n; i++ {
+			stream := events[i]
+			for {
+				n, err := stream.TryRead(buf)
+				if err == ErrWouldBlock {
+					break
+				}
+
+				if err != nil {
+					t.Fatal(err)
+				}
+				received += n
+				if received == len(tx)*N {
+					session.Close()
+					return
+				}
+			}
+		}
+	}
+}
+
 func TestWriteTo(t *testing.T) {
 	const N = 1 << 20
 	// server
