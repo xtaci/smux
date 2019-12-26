@@ -3,13 +3,12 @@ package smux
 import (
 	"container/heap"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"errors"
 )
 
 const (
@@ -18,6 +17,7 @@ const (
 
 var (
 	ErrInvalidProtocol  = errors.New("invalid protocol")
+	ErrConsumed         = errors.New("peer consumed more than sent")
 	ErrGoAway           = errors.New("stream id overflows, should start a new connection")
 	ErrTimeout          = errors.New("timeout")
 	ErrInvalidOperation = errors.New("invalid parameters on poll")
@@ -141,7 +141,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
-	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
+	if _, err := s.writeFrame(newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
 		return nil, err
 	}
 
@@ -354,6 +354,7 @@ func (s *Session) returnTokens(n int) {
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
 	var hdr rawHeader
+	var updHdr updHeader
 
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
@@ -367,7 +368,7 @@ func (s *Session) recvLoop() {
 		// read header first
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
-			if hdr.Version() != version {
+			if hdr.Version() != byte(s.config.Version) {
 				s.notifyProtoError(ErrInvalidProtocol)
 				return
 			}
@@ -408,6 +409,17 @@ func (s *Session) recvLoop() {
 						return
 					}
 				}
+			case cmdUPD:
+				if _, err := io.ReadFull(s.conn, updHdr[:]); err == nil {
+					s.streamLock.Lock()
+					if stream, ok := s.streams[sid]; ok {
+						stream.update(updHdr.Consumed(), updHdr.Window())
+					}
+					s.streamLock.Unlock()
+				} else {
+					s.notifyReadError(err)
+					return
+				}
 			default:
 				s.notifyProtoError(ErrInvalidProtocol)
 				return
@@ -427,7 +439,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(cmdNOP, 0), tickerPing.C, 0)
+			s.writeFrameInternal(newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, 0)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {

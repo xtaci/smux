@@ -58,6 +58,23 @@ func TestConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	config = DefaultConfig()
+	config.MaxStreamBuffer = 0
+	err = VerifyConfig(config)
+	t.Log(err)
+	if err == nil {
+		t.Fatal(err)
+	}
+
+	config = DefaultConfig()
+	config.MaxStreamBuffer = 100
+	config.MaxReceiveBuffer = 99
+	err = VerifyConfig(config)
+	t.Log(err)
+	if err == nil {
+		t.Fatal(err)
+	}
+
 	var bts buffer
 	if _, err := Server(&bts, config); err == nil {
 		t.Fatal("server started with wrong config")

@@ -5,7 +5,7 @@
 <img src="mux.jpg" alt="smux" height="120px" /> 
 
 [1]: https://godoc.org/github.com/xtaci/smux?status.svg
-[2]: https://godoc.org/gopkg.in/xtaci/smux.v1
+[2]: https://godoc.org/github.com/xtaci/smux
 [3]: https://img.shields.io/badge/license-MIT-blue.svg
 [4]: LICENSE
 [5]: https://travis-ci.org/xtaci/smux.svg?branch=master
@@ -27,7 +27,7 @@ Smux ( **S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It
 4. Minimized header(8Bytes), maximized payload. 
 5. Well-tested on millions of devices in [kcptun](https://github.com/xtaci/kcptun).
 6. Builtin fair queue traffic shaping.
-7. [SMUX Version 2](https://github.com/xtaci/smux/tree/v2) can set per-stream memory limit for back-pressure.
+7. Per-stream buffer for back-pressure flow control.
 
 ![smooth bandwidth curve](curve.jpg)
 
@@ -56,17 +56,21 @@ VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)
 
 VALUES FOR LATEST VERSION:
 VERSION:
-    1
+    1/2
     
 CMD:
     cmdSYN(0)
     cmdFIN(1)
     cmdPSH(2)
     cmdNOP(3)
+    cmdUPD(4)	// only supported on version 2
     
 STREAMID:
     client use odd numbers starts from 1
     server use even numbers starts from 0
+    
+cmdUPD:
+    | CONSUMED(4B) | WINDOW(4B) |
 ```
 
 ## Usage
