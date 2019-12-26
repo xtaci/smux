@@ -5,10 +5,6 @@ import (
 	"fmt"
 )
 
-const (
-	version = 1
-)
-
 const ( // cmds
 	cmdSYN byte = iota // stream open
 	cmdFIN             // stream close, a.k.a EOF mark
@@ -32,7 +28,7 @@ type Frame struct {
 	data []byte
 }
 
-func newFrame(cmd byte, sid uint32) Frame {
+func newFrame(version byte, cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 
