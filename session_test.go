@@ -202,11 +202,7 @@ func TestWriteTo(t *testing.T) {
 
 	var rcvbuf bytes.Buffer
 	nw, ew := stream.WriteTo(&rcvbuf)
-	cause := err
-	if e, ok := ew.(interface{ Cause() error }); ok {
-		cause = e.Cause()
-	}
-	if cause != io.EOF {
+	if ew != io.EOF {
 		t.Fatal(ew)
 	}
 
