@@ -188,6 +188,7 @@ func TestPoll(t *testing.T) {
 		}
 	}
 }
+
 func TestWriteTo(t *testing.T) {
 	const N = 1 << 20
 	// server
@@ -237,6 +238,80 @@ func TestWriteTo(t *testing.T) {
 
 	// client
 	session, _ := Client(conn, nil)
+	stream, _ := session.OpenStream()
+	sndbuf := make([]byte, N)
+	for i := range sndbuf {
+		sndbuf[i] = byte(rand.Int())
+	}
+
+	go stream.Write(sndbuf)
+
+	var rcvbuf bytes.Buffer
+	nw, ew := stream.WriteTo(&rcvbuf)
+	if ew != io.EOF {
+		t.Fatal(ew)
+	}
+
+	if nw != N {
+		t.Fatal("WriteTo nw mismatch", nw)
+	}
+
+	if bytes.Compare(sndbuf, rcvbuf.Bytes()) != 0 {
+		t.Fatal("mismatched echo bytes")
+	}
+}
+
+func TestWriteToV2(t *testing.T) {
+	config := DefaultConfig()
+	config.Version = 2
+	const N = 1 << 20
+	// server
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		session, _ := Server(conn, config)
+		for {
+			if stream, err := session.AcceptStream(); err == nil {
+				go func(s io.ReadWriteCloser) {
+					numBytes := 0
+					buf := make([]byte, 65536)
+					for {
+						n, err := s.Read(buf)
+						if err != nil {
+							return
+						}
+						s.Write(buf[:n])
+						numBytes += n
+
+						if numBytes == N {
+							s.Close()
+							return
+						}
+					}
+				}(stream)
+			} else {
+				return
+			}
+		}
+	}()
+
+	addr := ln.Addr().String()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// client
+	session, _ := Client(conn, config)
 	stream, _ := session.OpenStream()
 	sndbuf := make([]byte, N)
 	for i := range sndbuf {
