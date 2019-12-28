@@ -160,7 +160,7 @@ func TestPoll(t *testing.T) {
 		}
 	}()
 
-	buf := make([]byte, 128)
+	buf := make([]byte, 65536)
 	events := make([]*Stream, 128)
 	for {
 		n, err := session.PollWait(events)
@@ -171,15 +171,20 @@ func TestPoll(t *testing.T) {
 		for i := 0; i < n; i++ {
 			stream := events[i]
 			for {
-				n, err := stream.TryRead(buf)
+				size := stream.PeekSize()
+				nr, err := stream.TryRead(buf)
 				if err == ErrWouldBlock {
 					break
+				}
+
+				if size != nr {
+					t.Fatal("incorrect peak")
 				}
 
 				if err != nil {
 					t.Fatal(err)
 				}
-				received += n
+				received += nr
 				if received == len(tx)*N {
 					session.Close()
 					return

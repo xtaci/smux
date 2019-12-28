@@ -79,6 +79,16 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	}
 }
 
+// PeekSize returns the next size for Read
+func (s *Stream) PeekSize() int {
+	s.bufferLock.Lock()
+	defer s.bufferLock.Unlock()
+	if len(s.buffers) > 0 {
+		return len(s.buffers[0])
+	}
+	return 0
+}
+
 // TryRead is the nonblocking version of Read
 func (s *Stream) TryRead(b []byte) (n int, err error) {
 	if s.sess.config.Version == 2 {
