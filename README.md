@@ -22,11 +22,11 @@ Smux ( **S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It
 ## Features
 
 1. ***Token bucket*** controlled receiving, which provides smoother bandwidth graph(see picture below).
-2. Session-wide receive buffer, shared among streams, tightly controlled overall memory usage.
+2. Session-wide receive buffer, shared among streams, **fully controlled** overall memory usage.
 3. Minimized header(8Bytes), maximized payload. 
 4. Well-tested on millions of devices in [kcptun](https://github.com/xtaci/kcptun).
 5. Builtin fair queue traffic shaping.
-6. Per-stream buffer for back-pressure flow control(protocol version 2+).
+6. Per-stream sliding window to control congestion.(protocol version 2+).
 
 ![smooth bandwidth curve](curve.jpg)
 
