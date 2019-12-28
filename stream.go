@@ -80,7 +80,6 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 }
 
 // TryRead is the nonblocking version of Read
-// TryRead is the nonblocking version of Read
 func (s *Stream) TryRead(b []byte) (n int, err error) {
 	if s.sess.config.Version == 2 {
 		return s.tryReadv2(b)
