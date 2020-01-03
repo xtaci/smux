@@ -82,9 +82,13 @@ type Session struct {
 
 	// Edge-Triggered PollIn support
 	// Streams which become 'readable', will return from PollWait()
-	pollEvents        map[uint32]*Stream
-	pollEventsLock    sync.Mutex
-	chPollEventNotify chan struct{} // notify new events
+	pollInEvents   map[uint32]*Stream
+	pollOutEvents  map[uint32]*Stream
+	pollEventsLock sync.Mutex
+
+	// stream r/w notification
+	chPollInNotify  chan struct{}
+	chPollOutNotify chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -101,8 +105,10 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
-	s.chPollEventNotify = make(chan struct{}, 1)
-	s.pollEvents = make(map[uint32]*Stream)
+	s.chPollInNotify = make(chan struct{}, 1)
+	s.chPollOutNotify = make(chan struct{}, 1)
+	s.pollInEvents = make(map[uint32]*Stream)
+	s.pollOutEvents = make(map[uint32]*Stream)
 
 	if client {
 		s.nextStreamID = 1
@@ -212,41 +218,64 @@ func (s *Session) Close() error {
 	}
 }
 
-// PollWait returns streams which became readable
-func (s *Session) PollWait(events []*Stream) (int, error) {
-	if len(events) == 0 {
-		return -1, ErrInvalidOperation
+// PollWait returns streams which becomes readable
+func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, error) {
+	if len(revents) == 0 || len(wevents) == 0 {
+		return -1, -1, ErrInvalidOperation
 	}
 
 	for {
 		select {
-		case <-s.chPollEventNotify:
+		case <-s.chPollInNotify:
 			s.pollEventsLock.Lock()
-			i := 0
-			for id, stream := range s.pollEvents {
-				if i >= len(events) {
+			nr := 0
+			for id, stream := range s.pollInEvents {
+				if nr >= len(revents) {
 					break
 				}
-				events[i] = stream
-				i++
-				delete(s.pollEvents, id)
+				revents[nr] = stream
+				nr++
+				delete(s.pollInEvents, id)
+			}
+
+			nw := 0
+			for id, stream := range s.pollOutEvents {
+				if nw >= len(revents) {
+					break
+				}
+				revents[nw] = stream
+				nw++
+				delete(s.pollOutEvents, id)
 			}
 			s.pollEventsLock.Unlock()
-			return i, nil
+
+			return nr, nw, nil
 		case <-s.die:
-			return -1, io.ErrClosedPipe
+			return -1, -1, io.ErrClosedPipe
 		}
 	}
 }
 
 // streams notify session pollin events
-func (s *Session) notifyPoll(stream *Stream) {
+func (s *Session) notifyPollIn(stream *Stream) {
 	s.pollEventsLock.Lock()
-	s.pollEvents[stream.id] = stream
+	s.pollInEvents[stream.id] = stream
 	s.pollEventsLock.Unlock()
 
 	select {
-	case s.chPollEventNotify <- struct{}{}:
+	case s.chPollInNotify <- struct{}{}:
+	default:
+	}
+}
+
+// streams notify session pollout events
+func (s *Session) notifyPollOut(stream *Stream) {
+	s.pollEventsLock.Lock()
+	s.pollOutEvents[stream.id] = stream
+	s.pollEventsLock.Unlock()
+
+	select {
+	case s.chPollOutNotify <- struct{}{}:
 	default:
 	}
 }
@@ -340,7 +369,7 @@ func (s *Session) streamClosed(sid uint32) {
 
 	// poll remove
 	s.pollEventsLock.Lock()
-	delete(s.pollEvents, sid)
+	delete(s.pollInEvents, sid)
 	s.pollEventsLock.Unlock()
 }
 
@@ -555,6 +584,37 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio ui
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
 		return 0, ErrTimeout
+	}
+
+	select {
+	case result := <-req.result:
+		return result.n, result.err
+	case <-s.die:
+		return 0, io.ErrClosedPipe
+	case <-s.chSocketWriteError:
+		return 0, s.socketWriteError.Load().(error)
+	case <-deadline:
+		return 0, ErrTimeout
+	}
+}
+
+// nonblocking internal writeFrame
+func (s *Session) tryWriteFrameInternal(f Frame, deadline <-chan time.Time, prio uint64) (int, error) {
+	req := writeRequest{
+		prio:   prio,
+		frame:  f,
+		result: make(chan writeResult, 1),
+	}
+	select {
+	case s.shaper <- req:
+	case <-s.die:
+		return 0, io.ErrClosedPipe
+	case <-s.chSocketWriteError:
+		return 0, s.socketWriteError.Load().(error)
+	case <-deadline:
+		return 0, ErrTimeout
+	default:
+		return 0, ErrWouldBlock
 	}
 
 	select {

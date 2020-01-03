@@ -161,15 +161,16 @@ func TestPoll(t *testing.T) {
 	}()
 
 	buf := make([]byte, 65536)
-	events := make([]*Stream, 128)
+	revents := make([]*Stream, 128)
+	wevents := make([]*Stream, 128)
 	for {
-		n, err := session.PollWait(events)
+		n, _, err := session.PollWait(revents, wevents)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		for i := 0; i < n; i++ {
-			stream := events[i]
+			stream := revents[i]
 			for {
 				size := stream.PeekSize()
 				nr, err := stream.TryRead(buf)
