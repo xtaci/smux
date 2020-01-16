@@ -509,10 +509,6 @@ func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
 	s.heads = append(s.heads, buf)
-	// Edge-Trigger
-	if len(s.buffers) == 1 {
-		s.sess.notifyPollIn(s)
-	}
 	s.bufferLock.Unlock()
 	return
 }
@@ -546,8 +542,6 @@ func (s *Stream) update(consumed uint32, window uint32) {
 	case s.chUpdate <- struct{}{}:
 	default:
 	}
-
-	s.sess.notifyPollOut(s)
 }
 
 // mark this stream has been closed in protocol

@@ -141,60 +141,6 @@ func TestEcho(t *testing.T) {
 	session.Close()
 }
 
-func TestPoll(t *testing.T) {
-	_, stop, cli, err := setupServer(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-	session, _ := Client(cli, nil)
-	stream, _ := session.OpenStream()
-
-	const N = 100
-	var received int
-
-	tx := make([]byte, 128)
-	go func() {
-		for i := 0; i < N; i++ {
-			stream.Write(tx)
-		}
-	}()
-
-	buf := make([]byte, 65536)
-	revents := make([]*Stream, 128)
-	wevents := make([]*Stream, 128)
-	for {
-		n, _, err := session.PollWait(revents, wevents)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for i := 0; i < n; i++ {
-			stream := revents[i]
-			for {
-				size := stream.PeekSize()
-				nr, err := stream.TryRead(buf)
-				if err == ErrWouldBlock {
-					break
-				}
-
-				if size != nr {
-					t.Fatal("incorrect peak")
-				}
-
-				if err != nil {
-					t.Fatal(err)
-				}
-				received += nr
-				if received == len(tx)*N {
-					session.Close()
-					return
-				}
-			}
-		}
-	}
-}
-
 func TestWriteTo(t *testing.T) {
 	const N = 1 << 20
 	// server

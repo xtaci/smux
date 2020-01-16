@@ -16,12 +16,11 @@ const (
 )
 
 var (
-	ErrInvalidProtocol  = errors.New("invalid protocol")
-	ErrConsumed         = errors.New("peer consumed more than sent")
-	ErrGoAway           = errors.New("stream id overflows, should start a new connection")
-	ErrTimeout          = errors.New("timeout")
-	ErrInvalidOperation = errors.New("invalid parameters on poll")
-	ErrWouldBlock       = errors.New("operation would block on IO")
+	ErrInvalidProtocol = errors.New("invalid protocol")
+	ErrConsumed        = errors.New("peer consumed more than sent")
+	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
+	ErrTimeout         = errors.New("timeout")
+	ErrWouldBlock      = errors.New("operation would block on IO")
 )
 
 type writeRequest struct {
@@ -79,15 +78,6 @@ type Session struct {
 
 	shaper chan writeRequest // a shaper for writing
 	writes chan writeRequest
-
-	// Edge-Triggered PollIn support
-	// Streams which become 'readable', will return from PollWait()
-	pollInEvents   map[uint32]*Stream
-	pollOutEvents  map[uint32]*Stream
-	pollEventsLock sync.Mutex
-
-	// stream r/w notification
-	chPollNotify chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -104,9 +94,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
-	s.chPollNotify = make(chan struct{}, 1)
-	s.pollInEvents = make(map[uint32]*Stream)
-	s.pollOutEvents = make(map[uint32]*Stream)
 
 	if client {
 		s.nextStreamID = 1
@@ -216,66 +203,6 @@ func (s *Session) Close() error {
 	}
 }
 
-// PollWait returns streams which becomes readable
-func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, error) {
-	if len(revents) == 0 || len(wevents) == 0 {
-		return -1, -1, ErrInvalidOperation
-	}
-
-	select {
-	case <-s.chPollNotify:
-		s.pollEventsLock.Lock()
-		nr := 0
-		for id, stream := range s.pollInEvents {
-			if nr >= len(revents) {
-				break
-			}
-			revents[nr] = stream
-			nr++
-			delete(s.pollInEvents, id)
-		}
-
-		nw := 0
-		for id, stream := range s.pollOutEvents {
-			if nw >= len(wevents) {
-				break
-			}
-			wevents[nw] = stream
-			nw++
-			delete(s.pollOutEvents, id)
-		}
-		s.pollEventsLock.Unlock()
-
-		return nr, nw, nil
-	case <-s.die:
-		return -1, -1, io.ErrClosedPipe
-	}
-}
-
-// streams notify session readable events
-func (s *Session) notifyPollIn(stream *Stream) {
-	s.pollEventsLock.Lock()
-	s.pollInEvents[stream.id] = stream
-	s.pollEventsLock.Unlock()
-
-	select {
-	case s.chPollNotify <- struct{}{}:
-	default:
-	}
-}
-
-// streams notify session writable eevents
-func (s *Session) notifyPollOut(stream *Stream) {
-	s.pollEventsLock.Lock()
-	s.pollOutEvents[stream.id] = stream
-	s.pollEventsLock.Unlock()
-
-	select {
-	case s.chPollNotify <- struct{}{}:
-	default:
-	}
-}
-
 // notifyBucket notifies recvLoop that bucket is available
 func (s *Session) notifyBucket() {
 	select {
@@ -362,11 +289,6 @@ func (s *Session) streamClosed(sid uint32) {
 	}
 	delete(s.streams, sid)
 	s.streamLock.Unlock()
-
-	// poll remove
-	s.pollEventsLock.Lock()
-	delete(s.pollInEvents, sid)
-	s.pollEventsLock.Unlock()
 }
 
 // returnTokens is called by stream to return token after read
