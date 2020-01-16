@@ -254,10 +254,22 @@ func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, erro
 	}
 }
 
-// streams notify session events
-func (s *Session) notifyPoller(stream *Stream) {
+// streams notify session readable events
+func (s *Session) notifyPollIn(stream *Stream) {
 	s.pollEventsLock.Lock()
 	s.pollInEvents[stream.id] = stream
+	s.pollEventsLock.Unlock()
+
+	select {
+	case s.chPollNotify <- struct{}{}:
+	default:
+	}
+}
+
+// streams notify session writable eevents
+func (s *Session) notifyPollOut(stream *Stream) {
+	s.pollEventsLock.Lock()
+	s.pollOutEvents[stream.id] = stream
 	s.pollEventsLock.Unlock()
 
 	select {
