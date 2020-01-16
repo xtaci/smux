@@ -87,8 +87,7 @@ type Session struct {
 	pollEventsLock sync.Mutex
 
 	// stream r/w notification
-	chPollInNotify  chan struct{}
-	chPollOutNotify chan struct{}
+	chPollNotify chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -105,8 +104,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
-	s.chPollInNotify = make(chan struct{}, 1)
-	s.chPollOutNotify = make(chan struct{}, 1)
+	s.chPollNotify = make(chan struct{}, 1)
 	s.pollInEvents = make(map[uint32]*Stream)
 	s.pollOutEvents = make(map[uint32]*Stream)
 
@@ -226,7 +224,7 @@ func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, erro
 
 	for {
 		select {
-		case <-s.chPollInNotify:
+		case <-s.chPollNotify:
 			s.pollEventsLock.Lock()
 			nr := 0
 			for id, stream := range s.pollInEvents {
@@ -240,10 +238,10 @@ func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, erro
 
 			nw := 0
 			for id, stream := range s.pollOutEvents {
-				if nw >= len(revents) {
+				if nw >= len(wevents) {
 					break
 				}
-				revents[nw] = stream
+				wevents[nw] = stream
 				nw++
 				delete(s.pollOutEvents, id)
 			}
@@ -256,26 +254,14 @@ func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, erro
 	}
 }
 
-// streams notify session pollin events
-func (s *Session) notifyPollIn(stream *Stream) {
+// streams notify session events
+func (s *Session) notifyPoller(stream *Stream) {
 	s.pollEventsLock.Lock()
 	s.pollInEvents[stream.id] = stream
 	s.pollEventsLock.Unlock()
 
 	select {
-	case s.chPollInNotify <- struct{}{}:
-	default:
-	}
-}
-
-// streams notify session pollout events
-func (s *Session) notifyPollOut(stream *Stream) {
-	s.pollEventsLock.Lock()
-	s.pollOutEvents[stream.id] = stream
-	s.pollEventsLock.Unlock()
-
-	select {
-	case s.chPollOutNotify <- struct{}{}:
+	case s.chPollNotify <- struct{}{}:
 	default:
 	}
 }
@@ -584,37 +570,6 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio ui
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
 		return 0, ErrTimeout
-	}
-
-	select {
-	case result := <-req.result:
-		return result.n, result.err
-	case <-s.die:
-		return 0, io.ErrClosedPipe
-	case <-s.chSocketWriteError:
-		return 0, s.socketWriteError.Load().(error)
-	case <-deadline:
-		return 0, ErrTimeout
-	}
-}
-
-// nonblocking internal writeFrame
-func (s *Session) tryWriteFrameInternal(f Frame, deadline <-chan time.Time, prio uint64) (int, error) {
-	req := writeRequest{
-		prio:   prio,
-		frame:  f,
-		result: make(chan writeResult, 1),
-	}
-	select {
-	case s.shaper <- req:
-	case <-s.die:
-		return 0, io.ErrClosedPipe
-	case <-s.chSocketWriteError:
-		return 0, s.socketWriteError.Load().(error)
-	case <-deadline:
-		return 0, ErrTimeout
-	default:
-		return 0, ErrWouldBlock
 	}
 
 	select {
