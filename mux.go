@@ -14,8 +14,9 @@ import (
 
 // Config is used to tune the Smux session
 type Config struct {
-	// SMUX Protocol version
+	// SMUX Protocol version, support 1,2
 	Version int
+
 	// KeepAliveInterval is how often to send a NOP command to the remote
 	KeepAliveInterval time.Duration
 
