@@ -222,35 +222,33 @@ func (s *Session) PollWait(revents []*Stream, wevents []*Stream) (int, int, erro
 		return -1, -1, ErrInvalidOperation
 	}
 
-	for {
-		select {
-		case <-s.chPollNotify:
-			s.pollEventsLock.Lock()
-			nr := 0
-			for id, stream := range s.pollInEvents {
-				if nr >= len(revents) {
-					break
-				}
-				revents[nr] = stream
-				nr++
-				delete(s.pollInEvents, id)
+	select {
+	case <-s.chPollNotify:
+		s.pollEventsLock.Lock()
+		nr := 0
+		for id, stream := range s.pollInEvents {
+			if nr >= len(revents) {
+				break
 			}
-
-			nw := 0
-			for id, stream := range s.pollOutEvents {
-				if nw >= len(wevents) {
-					break
-				}
-				wevents[nw] = stream
-				nw++
-				delete(s.pollOutEvents, id)
-			}
-			s.pollEventsLock.Unlock()
-
-			return nr, nw, nil
-		case <-s.die:
-			return -1, -1, io.ErrClosedPipe
+			revents[nr] = stream
+			nr++
+			delete(s.pollInEvents, id)
 		}
+
+		nw := 0
+		for id, stream := range s.pollOutEvents {
+			if nw >= len(wevents) {
+				break
+			}
+			wevents[nw] = stream
+			nw++
+			delete(s.pollOutEvents, id)
+		}
+		s.pollEventsLock.Unlock()
+
+		return nr, nw, nil
+	case <-s.die:
+		return -1, -1, io.ErrClosedPipe
 	}
 }
 
