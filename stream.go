@@ -68,7 +68,7 @@ func (s *Stream) ID() uint32 {
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
 	for {
-		n, err = s.TryRead(b)
+		n, err = s.tryRead(b)
 		if err == ErrWouldBlock {
 			if ew := s.waitRead(); ew != nil {
 				return 0, ew
@@ -79,18 +79,8 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	}
 }
 
-// PeekSize returns the next size for Read
-func (s *Stream) PeekSize() int {
-	s.bufferLock.Lock()
-	defer s.bufferLock.Unlock()
-	if len(s.buffers) > 0 {
-		return len(s.buffers[0])
-	}
-	return 0
-}
-
-// TryRead is the nonblocking version of Read
-func (s *Stream) TryRead(b []byte) (n int, err error) {
+// tryRead is the nonblocking version of Read
+func (s *Stream) tryRead(b []byte) (n int, err error) {
 	if s.sess.config.Version == 2 {
 		return s.tryReadv2(b)
 	}
