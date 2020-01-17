@@ -293,6 +293,7 @@ func (s *Session) notifyReadError(err error) {
 		s.socketReadError.Store(err)
 		close(s.chSocketReadError)
 	})
+	s.Close()
 }
 
 func (s *Session) notifyWriteError(err error) {
@@ -300,6 +301,7 @@ func (s *Session) notifyWriteError(err error) {
 		s.socketWriteError.Store(err)
 		close(s.chSocketWriteError)
 	})
+	s.Close()
 }
 
 func (s *Session) notifyProtoError(err error) {
@@ -307,6 +309,7 @@ func (s *Session) notifyProtoError(err error) {
 		s.protoError.Store(err)
 		close(s.chProtoError)
 	})
+	s.Close()
 }
 
 // IsClosed does a safe check to see if we have shutdown
