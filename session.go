@@ -139,6 +139,8 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	select {
+	case <-s.chSocketReadError:
+		return nil, s.socketReadError.Load().(error)
 	case <-s.chSocketWriteError:
 		return nil, s.socketWriteError.Load().(error)
 	case <-s.die:
