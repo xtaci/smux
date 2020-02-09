@@ -447,6 +447,7 @@ func (s *Stream) GetDieCh() <-chan struct{} {
 // A zero time value disables the deadline.
 func (s *Stream) SetReadDeadline(t time.Time) error {
 	s.readDeadline.Store(t)
+	s.notifyReadEvent()
 	return nil
 }
 
