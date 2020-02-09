@@ -1,6 +1,6 @@
 <img src="smux.png" alt="smux" height="35px" />
 
-[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10]
+[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10] [![Sourcegraph][11]][12]
 
 <img src="mux.jpg" alt="smux" height="120px" /> 
 
@@ -14,6 +14,8 @@
 [8]: https://goreportcard.com/report/github.com/xtaci/smux
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
+[11]: https://sourcegraph.com/github.com/xtaci/kcp-go/-/badge.svg
+[12]: https://sourcegraph.com/github.com/xtaci/kcp-go?badge
 
 ## Introduction
 
