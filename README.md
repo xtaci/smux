@@ -14,8 +14,8 @@
 [8]: https://goreportcard.com/report/github.com/xtaci/smux
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
-[11]: https://sourcegraph.com/github.com/xtaci/kcp-go/-/badge.svg
-[12]: https://sourcegraph.com/github.com/xtaci/kcp-go?badge
+[11]: https://sourcegraph.com/github.com/xtaci/smux/-/badge.svg
+[12]: https://sourcegraph.com/github.com/xtaci/smux?badge
 
 ## Introduction
 
