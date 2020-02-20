@@ -392,7 +392,7 @@ func (s *Session) keepalive() {
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
-				// recvLoop main block on bucket == 0, in this case,
+				// recvLoop may block while bucket is 0, in this case,
 				// session should not be closed.
 				if atomic.LoadInt32(&s.bucket) > 0 {
 					s.Close()
