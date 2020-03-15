@@ -5,7 +5,7 @@
 <img src="mux.jpg" alt="smux" height="120px" /> 
 
 [1]: https://godoc.org/github.com/xtaci/smux?status.svg
-[2]: https://godoc.org/github.com/xtaci/smux
+[2]: https://pkg.go.dev/github.com/xtaci/kcp-go
 [3]: https://img.shields.io/badge/license-MIT-blue.svg
 [4]: LICENSE
 [5]: https://travis-ci.org/xtaci/smux.svg?branch=master
