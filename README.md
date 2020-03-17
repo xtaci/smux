@@ -34,7 +34,7 @@ Smux ( **S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It
 
 ## Documentation
 
-For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
+For complete documentation, see the associated [Godoc](https://pkg.go.dev/github.com/xtaci/smux).
 
 ## Benchmark
 ```
