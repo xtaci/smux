@@ -5,7 +5,10 @@ import (
 	"sync"
 )
 
-var defaultAllocator *Allocator
+var (
+	defaultAllocator *Allocator
+	debruijinPos     = [...]byte{0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8, 31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9}
+)
 
 func init() {
 	defaultAllocator = NewAllocator()
@@ -57,12 +60,14 @@ func (alloc *Allocator) Put(buf []byte) error {
 }
 
 // msb return the pos of most significiant bit
-func msb(size int) uint16 {
-	var pos uint16
-	size >>= 1
-	for size > 0 {
-		size >>= 1
-		pos++
-	}
-	return pos
+// http://supertech.csail.mit.edu/papers/debruijn.pdf
+func msb(size int) byte {
+	v := uint32(size)
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v = (v >> 1) + 1
+	return debruijinPos[(v*0x077CB531)>>27]
 }
