@@ -5,10 +5,29 @@ import (
 	"sync"
 )
 
-var defaultAllocator *Allocator
+var (
+	lowBitsMap  = make([]byte, 257)
+	highBitsMap = make([]byte, 257)
+
+	defaultAllocator *Allocator
+)
 
 func init() {
 	defaultAllocator = NewAllocator()
+
+	for i := 1; i <= 256; i++ {
+		var pos int
+		var size int = i
+		size >>= 1
+		for pos = 0; size > 0; pos++ {
+			size >>= 1
+		}
+		if i > (1 << pos) {
+			pos += 1
+		}
+		lowBitsMap[i] = byte(pos)
+		highBitsMap[i] = (byte(pos) + 8)
+	}
 }
 
 // Allocator for incoming frames, optimized to prevent overwriting after zeroing
@@ -37,12 +56,7 @@ func (alloc *Allocator) Get(size int) []byte {
 		return nil
 	}
 
-	bits := msb(size)
-	if size == 1<<bits {
-		return alloc.buffers[bits].Get().([]byte)[:size]
-	} else {
-		return alloc.buffers[bits+1].Get().([]byte)[:size]
-	}
+	return alloc.buffers[msb(size)].Get().([]byte)[:size]
 }
 
 // Put returns a []byte to pool for future use,
@@ -57,12 +71,18 @@ func (alloc *Allocator) Put(buf []byte) error {
 }
 
 // msb return the pos of most significiant bit
-func msb(size int) uint16 {
-	var pos uint16
-	size >>= 1
-	for size > 0 {
-		size >>= 1
-		pos++
+func msb(size int) byte {
+	if size == 65536 {
+		return 16
+	}
+
+	if size < 256 {
+		return lowBitsMap[size&0xFF]
+	}
+
+	pos := highBitsMap[(size&0xFF00)>>8]
+	if size > (1 << pos) {
+		pos += 1
 	}
 	return pos
 }
