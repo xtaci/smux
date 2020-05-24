@@ -459,7 +459,7 @@ func (s *Stream) close(reason error) error {
 
 	if once {
 		fr := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
-		if reason != nil {
+		if reason != nil && s.sess.config.Version > 1 {
 			fr.data = []byte(reason.Error())
 		}
 
