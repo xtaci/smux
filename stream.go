@@ -2,6 +2,7 @@ package smux
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -30,6 +31,8 @@ type Stream struct {
 	// FIN command
 	chFinEvent   chan struct{}
 	finEventOnce sync.Once
+
+	finReason string
 
 	// deadlines
 	readDeadline  atomic.Value
@@ -110,7 +113,11 @@ func (s *Stream) tryRead(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, io.EOF
+		if s.finReason != "" {
+			return 0, errors.New(s.finReason)
+		} else {
+			return 0, io.EOF
+		}
 	default:
 		return 0, ErrWouldBlock
 	}
@@ -161,7 +168,11 @@ func (s *Stream) tryReadv2(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, io.EOF
+		if s.finReason != "" {
+			return 0, errors.New(s.finReason)
+		} else {
+			return 0, io.EOF
+		}
 	default:
 		return 0, ErrWouldBlock
 	}
@@ -272,7 +283,11 @@ func (s *Stream) waitRead() error {
 	case <-s.chReadEvent:
 		return nil
 	case <-s.chFinEvent:
-		return io.EOF
+		if s.finReason != "" {
+			return errors.New(s.finReason)
+		} else {
+			return io.EOF
+		}
 	case <-s.sess.chSocketReadError:
 		return s.sess.socketReadError.Load().(error)
 	case <-s.sess.chProtoError:
@@ -402,7 +417,11 @@ func (s *Stream) writeV2(b []byte) (n int, err error) {
 		if len(b) > 0 {
 			select {
 			case <-s.chFinEvent: // if fin arrived, future window update is impossible
-				return 0, io.EOF
+				if s.finReason != "" {
+					return 0, errors.New(s.finReason)
+				} else {
+					return 0, io.EOF
+				}
 			case <-s.die:
 				return sent, io.ErrClosedPipe
 			case <-deadline:
@@ -420,15 +439,31 @@ func (s *Stream) writeV2(b []byte) (n int, err error) {
 
 // Close implements net.Conn
 func (s *Stream) Close() error {
+	return s.close(nil)
+}
+
+func (s *Stream) Cancel(reason error) error {
+	return s.close(reason)
+}
+
+func (s *Stream) close(reason error) error {
 	var once bool
 	var err error
 	s.dieOnce.Do(func() {
 		close(s.die)
 		once = true
+		if reason != nil {
+			s.finReason = reason.Error()
+		}
 	})
 
 	if once {
-		_, err = s.sess.writeFrame(newFrame(byte(s.sess.config.Version), cmdFIN, s.id))
+		fr := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
+		if reason != nil {
+			fr.data = []byte(reason.Error())
+		}
+
+		_, err = s.sess.writeFrame(fr)
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
@@ -538,6 +573,14 @@ func (s *Stream) update(consumed uint32, window uint32) {
 // mark this stream has been closed in protocol
 func (s *Stream) fin() {
 	s.finEventOnce.Do(func() {
+		close(s.chFinEvent)
+	})
+}
+
+// mark this stream has been canceled in protocol
+func (s *Stream) rst(reason string) {
+	s.finEventOnce.Do(func() {
+		s.finReason = reason
 		close(s.chFinEvent)
 	})
 }
