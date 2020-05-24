@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -449,6 +450,24 @@ func TestStreamDoubleClose(t *testing.T) {
 		t.Fatal("stream double close doesn't return error")
 	}
 	session.Close()
+}
+
+func TestStreamCloseWithError(t *testing.T) {
+	cs, ss, err := getSmuxStreamPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss.CloseWithError(errors.New("test error"))
+
+	tinybuf := make([]byte, 6)
+	_, err = cs.Read(tinybuf)
+	if err == nil {
+		t.Fatal("stream cancel must return error")
+	}
+
+	if err.Error() != "test error" {
+		t.Fatal("client stream must handle the same error as server stream send after cancel")
+	}
 }
 
 func TestConcurrentClose(t *testing.T) {
