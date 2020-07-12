@@ -338,9 +338,24 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			case cmdFIN:
+				var reason string
+				if hdr.Length() > 0 {
+					newbuf := defaultAllocator.Get(int(hdr.Length()))
+					if _, err := io.ReadFull(s.conn, newbuf); err == nil {
+						reason = string(newbuf)
+					} else {
+						s.notifyReadError(err)
+						return
+					}
+				}
+
 				s.streamLock.Lock()
 				if stream, ok := s.streams[sid]; ok {
-					stream.fin()
+					if reason != "" {
+						stream.rst(reason)
+					} else {
+						stream.fin()
+					}
 					stream.notifyReadEvent()
 				}
 				s.streamLock.Unlock()
