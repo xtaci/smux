@@ -890,6 +890,16 @@ func TestWriteFrameInternal(t *testing.T) {
 		if !strings.Contains(err.Error(), "timeout") {
 			t.Fatal("write frame with deadline failed", err)
 		}
+		netErr, ok := err.(net.Error)
+		if !ok {
+			t.Fatal("expected net.Error for timeout")
+		}
+		if netErr.IsTimeout() == false {
+			t.Fatal("expected IsTimeout() to be true on timeout error ", err)
+		}
+		if netErr.IsTemporary() == true {
+			t.Fatal("expected IsTemporary() to be true on timeout error", err)
+		}
 	}
 	cli.Close()
 

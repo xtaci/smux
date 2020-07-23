@@ -19,9 +19,17 @@ var (
 	ErrInvalidProtocol = errors.New("invalid protocol")
 	ErrConsumed        = errors.New("peer consumed more than sent")
 	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
-	ErrTimeout         = errors.New("timeout")
+	ErrTimeout         = &timeoutError{}
 	ErrWouldBlock      = errors.New("operation would block on IO")
 )
+
+var _ net.Error = &timeoutError{}
+
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string   { return "timeout" }
+func (e *timeoutError) Timeout() bool   { return true }
+func (e *timeoutError) Temporary() bool { return true }
 
 type writeRequest struct {
 	prio   uint64
