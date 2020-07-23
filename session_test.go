@@ -894,11 +894,11 @@ func TestWriteFrameInternal(t *testing.T) {
 		if !ok {
 			t.Fatal("expected net.Error for timeout")
 		}
-		if netErr.IsTimeout() == false {
-			t.Fatal("expected IsTimeout() to be true on timeout error ", err)
+		if netErr.Timeout() == false {
+			t.Fatal("expected Timeout() to be true on timeout error ", err)
 		}
-		if netErr.IsTemporary() == true {
-			t.Fatal("expected IsTemporary() to be true on timeout error", err)
+		if netErr.Temporary() == false {
+			t.Fatal("expected Temporary() to be true on timeout error", err)
 		}
 	}
 	cli.Close()
