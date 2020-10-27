@@ -464,7 +464,11 @@ func (s *Session) sendLoop() {
 				n, err = bw.WriteBuffers(vec)
 			} else {
 				copy(buf[headerSize:], request.frame.data)
-				n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
+				for n, err = 0, nil; n != headerSize+len(request.frame.data) && err == nil; {
+					i := 0
+					i, err = s.conn.Write(buf[n : headerSize+len(request.frame.data)])
+					n += i
+				}
 			}
 
 			n -= headerSize
