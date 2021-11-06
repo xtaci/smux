@@ -533,58 +533,53 @@ func TestIsClose(t *testing.T) {
 }
 
 func TestKeepAliveTimeout(t *testing.T) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	c1, c2, err := getTCPConnectionPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	go func() {
-		ln.Accept()
-	}()
-
-	cli, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cli.Close()
+	defer c1.Close()
+	defer c2.Close()
 
 	config := DefaultConfig()
 	config.KeepAliveInterval = time.Second
 	config.KeepAliveTimeout = 2 * time.Second
-	session, _ := Client(cli, config)
+	session, _ := Client(c1, config)
 	time.Sleep(3 * time.Second)
 	if !session.IsClosed() {
 		t.Fatal("keepalive-timeout failed")
 	}
 }
 
-type blockWriteConn struct {
+type delayWriteConn struct {
 	net.Conn
+	Delay time.Duration
 }
 
-func (c *blockWriteConn) Write(b []byte) (n int, err error) {
-	forever := time.Hour * 24
-	time.Sleep(forever)
+func (c *delayWriteConn) Write(b []byte) (n int, err error) {
+	time.Sleep(c.Delay)
 	return c.Conn.Write(b)
 }
 
 func TestKeepAliveBlockWriteTimeout(t *testing.T) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	c1, c2, err := getTCPConnectionPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	go func() {
-		ln.Accept()
-	}()
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveBlockWriteTimeout(t, c1)
+}
 
-	cli, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cli.Close()
+func TestKeepAliveBlockWriteTimeoutPipe(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	testKeepAliveBlockWriteTimeout(t, c1)
+}
+
+func testKeepAliveBlockWriteTimeout(t *testing.T, cli net.Conn) {
 	//when writeFrame block, keepalive in old version never timeout
-	blockWriteCli := &blockWriteConn{cli}
+	blockWriteCli := &delayWriteConn{cli, 24 * time.Hour}
 
 	config := DefaultConfig()
 	config.KeepAliveInterval = time.Second
@@ -907,7 +902,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		config := DefaultConfig()
 		config.KeepAliveInterval = time.Second
 		config.KeepAliveTimeout = 2 * time.Second
-		session, _ = Client(&blockWriteConn{cli}, config)
+		session, _ = Client(&delayWriteConn{cli, 24 * time.Hour}, config)
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
 		c := make(chan time.Time)
 		go func() {
