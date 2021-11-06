@@ -47,6 +47,12 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 	return ln.Addr().String(), func() { ln.Close() }, conn, nil
 }
 
+func setupServerPipe(tb testing.TB) (addr string, stopfunc func(), client net.Conn, err error) {
+	ln, conn := net.Pipe()
+	go handleConnection(ln)
+	return "", func() { ln.Close() }, conn, nil
+}
+
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn, nil)
 	for {
@@ -288,7 +294,7 @@ func TestWriteToV2(t *testing.T) {
 }
 
 func TestGetDieCh(t *testing.T) {
-	cs, ss, err := getSmuxStreamPair()
+	cs, ss, err := getSmuxStreamPair(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -973,6 +979,19 @@ func BenchmarkAcceptClose(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer stop()
+	benchmarkAcceptClose(b, cli)
+}
+
+func BenchmarkAcceptClosePipe(b *testing.B) {
+	_, stop, cli, err := setupServerPipe(b)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer stop()
+	benchmarkAcceptClose(b, cli)
+}
+
+func benchmarkAcceptClose(b *testing.B, cli net.Conn) {
 	session, _ := Client(cli, nil)
 	for i := 0; i < b.N; i++ {
 		if stream, err := session.OpenStream(); err == nil {
@@ -982,8 +1001,19 @@ func BenchmarkAcceptClose(b *testing.B) {
 		}
 	}
 }
+
 func BenchmarkConnSmux(b *testing.B) {
-	cs, ss, err := getSmuxStreamPair()
+	cs, ss, err := getSmuxStreamPair(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+func BenchmarkConnSmuxPipe(b *testing.B) {
+	cs, ss, err := getSmuxStreamPairPipe(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1002,17 +1032,32 @@ func BenchmarkConnTCP(b *testing.B) {
 	bench(b, cs, ss)
 }
 
-func getSmuxStreamPair() (*Stream, *Stream, error) {
+func BenchmarkConnPipe(b *testing.B) {
+	cs, ss := net.Pipe()
+	defer cs.Close()
+	defer ss.Close()
+	bench(b, cs, ss)
+}
+
+func getSmuxStreamPair(config *Config) (*Stream, *Stream, error) {
 	c1, c2, err := getTCPConnectionPair()
 	if err != nil {
 		return nil, nil, err
 	}
+	return getSmuxStreamPairInternal(c1, c2, config)
+}
 
-	s, err := Server(c2, nil)
+func getSmuxStreamPairPipe(config *Config) (*Stream, *Stream, error) {
+	c1, c2 := net.Pipe()
+	return getSmuxStreamPairInternal(c1, c2, config)
+}
+
+func getSmuxStreamPairInternal(c1, c2 net.Conn, config *Config) (*Stream, *Stream, error) {
+	s, err := Server(c2, config)
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := Client(c1, nil)
+	c, err := Client(c1, config)
 	if err != nil {
 		return nil, nil, err
 	}
