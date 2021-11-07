@@ -13,6 +13,7 @@ import (
 	_ "net/http/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -966,6 +967,56 @@ func TestWriteDeadline(t *testing.T) {
 		}
 	}
 	session.Close()
+}
+
+func TestWriteOnlyExhaustedSessionBucket(t *testing.T) {
+	testWriteOnlyExhaustedSessionBucket(t, getSmuxStreamPair)
+}
+
+func TestWriteOnlyExhaustedSessionBucketPipe(t *testing.T) {
+	testWriteOnlyExhaustedSessionBucket(t, getSmuxStreamPairPipe)
+}
+
+func testWriteOnlyExhaustedSessionBucket(t *testing.T, getPairFn func(config *Config) (*Stream, *Stream, error)) {
+	config := DefaultConfig()
+	config.Version = 2
+	config.MaxReceiveBuffer = initialPeerWindow / 2 // less than initialPeerWindow (262144)
+
+	c1, c2, err := getPairFn(config)
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	defer c1.Close()
+	defer c2.Close()
+
+	startNotify := make(chan bool, 1)
+	go func() {
+		buf := make([]byte, int(float64(config.MaxStreamBuffer)*0.9))
+		for {
+			c1.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+			_, err := c1.Write(buf)
+			if err != nil {
+				break
+			}
+		}
+		startNotify <- true
+	}()
+	<-startNotify
+
+	// we never read out any data from c2
+	// so peerWindow will always be initialPeerWindow (262144)
+	// and c1 can keep writing until c2 session bucket exhausted
+
+	bucket1 := atomic.LoadInt32(&c1.sess.bucket)
+	bucket2 := atomic.LoadInt32(&c2.sess.bucket)
+	t.Log("[MaxReceiveBuffer]", config.MaxReceiveBuffer)
+	t.Log("[MaxStreamBuffer]", config.MaxStreamBuffer)
+	t.Log("[c1]", bucket1)
+	t.Log("[c2]", bucket2)
+	if bucket2 <= 0 {
+		t.Fatal("bucket exhausted!!", bucket2)
+	}
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
