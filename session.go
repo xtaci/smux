@@ -14,6 +14,7 @@ import (
 const (
 	defaultAcceptBacklog = 1024
 	maxShaperSize        = 1024
+	openCloseTimeout     = 30 * time.Second // stream open/close timeout
 )
 
 var (
@@ -514,7 +515,7 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameInternal(f, time.After(s.config.KeepAliveTimeout), 0)
+	return s.writeFrameInternal(f, time.After(openCloseTimeout), 0)
 }
 
 // internal writeFrame version to support deadline used in keepalive
