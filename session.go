@@ -321,11 +321,6 @@ func (s *Session) recvLoop() {
 			}
 		}
 
-		// set timeout conn
-		if tconn, ok := s.conn.(interface{ SetReadDeadline(t time.Time) error }); ok {
-			tconn.SetReadDeadline(time.Now().Add(s.config.KeepAliveTimeout))
-		}
-
 		// read header first
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
