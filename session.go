@@ -17,6 +17,14 @@ const (
 	openCloseTimeout     = 30 * time.Second // stream open/close timeout
 )
 
+// define frame class
+type CLASSID int
+
+const (
+	CLSCTRL CLASSID = iota
+	CLSDATA
+)
+
 var (
 	ErrInvalidProtocol = errors.New("invalid protocol")
 	ErrConsumed        = errors.New("peer consumed more than sent")
@@ -26,7 +34,7 @@ var (
 )
 
 type writeRequest struct {
-	prio   uint32
+	class  CLASSID
 	frame  Frame
 	seq    uint32
 	result chan writeResult
@@ -396,7 +404,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, 0)
+			s.writeFrameInternal(newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -515,13 +523,13 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameInternal(f, time.After(openCloseTimeout), 0)
+	return s.writeFrameInternal(f, time.After(openCloseTimeout), CLSCTRL)
 }
 
 // internal writeFrame version to support deadline used in keepalive
-func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio uint32) (int, error) {
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class CLASSID) (int, error) {
 	req := writeRequest{
-		prio:   prio,
+		class:  class,
 		frame:  f,
 		seq:    atomic.AddUint32(&s.requestID, 1),
 		result: make(chan writeResult, 1),
