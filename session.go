@@ -519,7 +519,7 @@ func (s *Session) sendLoop() {
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
 func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameInternal(f, nil, 0)
+	return s.writeFrameInternal(f, time.After(s.config.KeepAliveTimeout), 0)
 }
 
 // internal writeFrame version to support deadline used in keepalive
