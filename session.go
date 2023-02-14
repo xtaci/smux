@@ -480,11 +480,6 @@ func (s *Session) sendLoop() {
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 
-			// set timeout conn
-			if tconn, ok := s.conn.(interface{ SetWriteDeadline(t time.Time) error }); ok {
-				tconn.SetWriteDeadline(time.Now().Add(s.config.KeepAliveTimeout))
-			}
-
 			if len(vec) > 0 {
 				vec[0] = buf[:headerSize]
 				vec[1] = request.frame.data
