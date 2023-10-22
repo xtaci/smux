@@ -56,7 +56,10 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.peerWindow = initialPeerWindow // set to initial window size
+	s.peerWindow = initialPeerWindow                             // set to initial window size
+	if uint32(sess.config.MaxStreamBuffer) < initialPeerWindow { // avoid write only cause session bucket exhausted
+		s.peerWindow = uint32(sess.config.MaxStreamBuffer)
+	}
 	return s
 }
 
