@@ -277,7 +277,7 @@ func (s *Stream) sendWindowUpdate(consumed uint32) error {
 	binary.LittleEndian.PutUint32(hdr[:], consumed)
 	binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
 	frame.data = hdr[:]
-	_, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+	_, err := s.sess.writeFrameInternal(frame, deadline, CLSCTRL)
 	return err
 }
 
