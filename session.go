@@ -47,12 +47,24 @@ const (
 	CLSDATA
 )
 
+// timeoutError representing timeouts for operations such as accept, read and write
+//
+// To better cooperate with the standard library, timeoutError should implement the standard library's `net.Error`.
+//
+// For example, using smux to implement net.Listener and work with http.Server, the keep-alive connection (*smux.Stream) will be unexpectedly closed.
+// For more details, see https://github.com/xtaci/smux/pull/99.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Temporary() bool { return true }
+func (timeoutError) Timeout() bool   { return true }
+
 var (
-	ErrInvalidProtocol = errors.New("invalid protocol")
-	ErrConsumed        = errors.New("peer consumed more than sent")
-	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
-	ErrTimeout         = errors.New("timeout")
-	ErrWouldBlock      = errors.New("operation would block on IO")
+	ErrInvalidProtocol           = errors.New("invalid protocol")
+	ErrConsumed                  = errors.New("peer consumed more than sent")
+	ErrGoAway                    = errors.New("stream id overflows, should start a new connection")
+	ErrTimeout         net.Error = &timeoutError{}
+	ErrWouldBlock                = errors.New("operation would block on IO")
 )
 
 type writeRequest struct {
