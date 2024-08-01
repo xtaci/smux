@@ -36,10 +36,10 @@ import (
 const (
 	defaultAcceptBacklog = 1024
 	maxShaperSize        = 1024
-	openCloseTimeout     = 30 * time.Second // stream open/close timeout
+	openCloseTimeout     = 30 * time.Second // Timeout for opening/closing streams
 )
 
-// define frame class
+// CLASSID represents the class of a frame
 type CLASSID int
 
 const (
@@ -67,6 +67,7 @@ var (
 	ErrWouldBlock                = errors.New("operation would block on IO")
 )
 
+// writeRequest represents a request to write a frame
 type writeRequest struct {
 	class  CLASSID
 	frame  Frame
@@ -74,6 +75,7 @@ type writeRequest struct {
 	result chan writeResult
 }
 
+// writeResult represents the result of a write request
 type writeResult struct {
 	n   int
 	err error
@@ -117,7 +119,7 @@ type Session struct {
 
 	deadline atomic.Value
 
-	requestID uint32            // write request monotonic increasing
+	requestID uint32            // Monotonic increasing write request ID
 	shaper    chan writeRequest // a shaper for writing
 	writes    chan writeRequest
 }
