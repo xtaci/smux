@@ -346,6 +346,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	// check if stream has closed
 	select {
+	case <-s.chFinEvent: // passive closing
+		return 0, io.EOF
 	case <-s.die:
 		return 0, io.ErrClosedPipe
 	default:
@@ -382,6 +384,8 @@ func (s *Stream) writeV2(b []byte) (n int, err error) {
 
 	// check if stream has closed
 	select {
+	case <-s.chFinEvent:
+		return 0, io.EOF
 	case <-s.die:
 		return 0, io.ErrClosedPipe
 	default:
