@@ -484,7 +484,9 @@ func (s *Stream) Close() error {
 	})
 
 	if once {
-		_, err = s.sess.writeFrame(newFrame(byte(s.sess.config.Version), cmdFIN, s.id))
+		// send FIN in order
+		f := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
+		_, err = s.sess.writeFrameInternal(f, time.After(openCloseTimeout), CLSDATA)
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
