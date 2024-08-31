@@ -403,6 +403,9 @@ func (s *Session) recvLoop() {
 							stream.pushBytes(newbuf)
 							atomic.AddInt32(&s.bucket, -int32(written))
 							stream.notifyReadEvent()
+						} else {
+							// data directed to a missing/closed stream, recycle the buffer immediately.
+							defaultAllocator.Put(newbuf)
 						}
 						s.streamLock.Unlock()
 					} else {
