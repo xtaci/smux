@@ -401,6 +401,7 @@ func (s *Session) recvLoop() {
 						s.streamLock.Lock()
 						if stream, ok := s.streams[sid]; ok {
 							stream.pushBytes(newbuf)
+							// a stream used some token
 							atomic.AddInt32(&s.bucket, -int32(written))
 							stream.notifyReadEvent()
 						} else {
