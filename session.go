@@ -532,6 +532,7 @@ func (s *Session) sendLoop() {
 			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
 			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 
+			// support for scatter-gather I/O
 			if len(vec) > 0 {
 				vec[0] = buf[:headerSize]
 				vec[1] = request.frame.data
