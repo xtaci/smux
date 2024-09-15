@@ -233,6 +233,7 @@ func TestWriteTo(t *testing.T) {
 	if !bytes.Equal(sndbuf, rcvbuf.Bytes()) {
 		t.Fatal("mismatched echo bytes")
 	}
+	t.Log(stream)
 }
 
 func TestWriteToV2(t *testing.T) {
@@ -301,12 +302,14 @@ func TestWriteToV2(t *testing.T) {
 	}
 
 	if nw != N {
-		t.Fatal("WriteTo nw mismatch", nw)
+		t.Fatal("WriteTo nw mismatch", nw, N)
 	}
 
 	if !bytes.Equal(sndbuf, rcvbuf.Bytes()) {
 		t.Fatal("mismatched echo bytes")
 	}
+
+	t.Log(stream)
 }
 
 func TestGetDieCh(t *testing.T) {
