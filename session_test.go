@@ -892,7 +892,11 @@ func TestWriteFrameInternal(t *testing.T) {
 	session.Close()
 	for i := 0; i < 100; i++ {
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
-		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout), CLSDATA)
+
+		timer := time.NewTimer(session.config.KeepAliveTimeout)
+		defer timer.Stop()
+
+		session.writeFrameInternal(f, timer.C, CLSDATA)
 	}
 
 	// random cmds
@@ -904,7 +908,11 @@ func TestWriteFrameInternal(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		session.writeFrameInternal(f, time.After(session.config.KeepAliveTimeout), CLSDATA)
+
+		timer := time.NewTimer(session.config.KeepAliveTimeout)
+		defer timer.Stop()
+
+		session.writeFrameInternal(f, timer.C, CLSDATA)
 	}
 	//deadline occur
 	{
