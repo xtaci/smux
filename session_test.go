@@ -1118,6 +1118,8 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	}()
 	for i := 0; i < b.N; i++ {
 		wr.Write(buf)
+		// invalidate L3 Cache
+		buf = make([]byte, 128*1024)
 	}
 	wg.Wait()
 }
