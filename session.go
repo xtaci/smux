@@ -348,9 +348,12 @@ func (s *Session) RemoteAddr() net.Addr {
 // notify the session that a stream has closed
 func (s *Session) streamClosed(sid uint32) {
 	s.streamLock.Lock()
-	if n := s.streams[sid].recycleTokens(); n > 0 { // return remaining tokens to the bucket
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-			s.notifyBucket()
+	if stream, ok := s.streams[sid]; ok {
+		n := stream.recycleTokens()
+		if n > 0 { // return remaining tokens to the bucket
+			if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+				s.notifyBucket()
+			}
 		}
 	}
 	delete(s.streams, sid)
