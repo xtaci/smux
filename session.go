@@ -355,8 +355,8 @@ func (s *Session) streamClosed(sid uint32) {
 				s.notifyBucket()
 			}
 		}
+		delete(s.streams, sid)
 	}
-	delete(s.streams, sid)
 	s.streamLock.Unlock()
 }
 
