@@ -23,6 +23,7 @@
 package smux
 
 import (
+	"math/bits"
 	"math/rand"
 	"testing"
 )
@@ -105,5 +106,15 @@ func BenchmarkAlloc(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pbuf := defaultAllocator.Get(i % 65536)
 		defaultAllocator.Put(pbuf)
+	}
+}
+
+func TestDebrujin(t *testing.T) {
+	for i := 1; i < 65536; i++ {
+		a := int(msb(i))
+		b := bits.Len(uint(i))
+		if a+1 != b {
+			t.Fatal("debrujin")
+		}
 	}
 }
