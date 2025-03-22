@@ -41,50 +41,58 @@ type Allocator struct {
 	buffers []sync.Pool
 }
 
-// NewAllocator initiates a []byte allocator for frames less than 65536 bytes,
-// the waste(memory fragmentation) of space allocation is guaranteed to be
-// no more than 50%.
 func NewAllocator() *Allocator {
 	alloc := new(Allocator)
 	alloc.buffers = make([]sync.Pool, 17) // 1B -> 64K
 	for k := range alloc.buffers {
 		i := k
 		alloc.buffers[k].New = func() interface{} {
-			b := make([]byte, 1<<uint32(i))
-			return &b
+			return make([]byte, 1<<uint32(i))
+		}
+		// Pre-warm each pool to reduce initial allocations
+		for j := 0; j < 256; j++ {
+			alloc.buffers[k].Put(make([]byte, 1<<uint32(i)))
 		}
 	}
 	return alloc
 }
 
 // Get a []byte from pool with most appropriate cap
-func (alloc *Allocator) Get(size int) *[]byte {
+func (alloc *Allocator) Get(size int) []byte {
 	if size <= 0 || size > 65536 {
 		return nil
 	}
 
 	bits := msb(size)
-	if size == 1<<bits {
-		p := alloc.buffers[bits].Get().(*[]byte)
-		*p = (*p)[:size]
-		return p
+	idx := bits
+	if size != 1<<bits {
+		idx = bits + 1
 	}
-	p := alloc.buffers[bits+1].Get().(*[]byte)
-	*p = (*p)[:size]
-	return p
+
+	if int(idx) >= len(alloc.buffers) {
+		return nil
+	}
+
+	buf := alloc.buffers[idx].Get().([]byte)
+	return buf[:size]
 }
 
 // Put returns a []byte to pool for future use,
 // which the cap must be exactly 2^n
-func (alloc *Allocator) Put(p *[]byte) error {
-	if p == nil {
-		return errors.New("allocator Put() incorrect buffer size")
+func (alloc *Allocator) Put(buf []byte) error {
+	capacity := cap(buf)
+	if capacity == 0 || capacity > 65536 {
+		return errors.New("invalid buffer capacity")
 	}
-	bits := msb(cap(*p))
-	if cap(*p) == 0 || cap(*p) > 65536 || cap(*p) != 1<<bits {
-		return errors.New("allocator Put() incorrect buffer size")
+
+	bits := msb(capacity)
+	if capacity != 1<<bits {
+		return errors.New("buffer capacity not a power of two")
 	}
-	alloc.buffers[bits].Put(p)
+
+	// Reset to full capacity
+	buf = buf[:capacity]
+	alloc.buffers[bits].Put(buf)
 	return nil
 }
 
