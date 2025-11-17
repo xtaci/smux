@@ -66,12 +66,12 @@ const (
 )
 
 type shaperQueue struct {
-	streams    map[uint32]*shaperHeap
-	lastVisits map[uint32]time.Time
-	allSids    []uint32
-	nextIdx    uint32
-	count      uint32
-	mu         sync.Mutex
+	streams      map[uint32]*shaperHeap
+	lastVisits   map[uint32]time.Time
+	allStreamIds []uint32
+	nextIdx      uint32
+	count        uint32
+	mu           sync.Mutex
 }
 
 func NewShaperQueue() *shaperQueue {
@@ -89,7 +89,7 @@ func (sq *shaperQueue) Push(req writeRequest) {
 	sid := req.frame.sid
 	if _, ok := sq.streams[sid]; !ok {
 		sq.streams[sid] = new(shaperHeap)
-		sq.allSids = append(sq.allSids, sid)
+		sq.allStreamIds = append(sq.allStreamIds, sid)
 	}
 
 	// push the request into the corresponding stream heap.
@@ -105,17 +105,17 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 	defer sq.mu.Unlock()
 
 	// if there are no streams, return false
-	if len(sq.allSids) == 0 {
+	if len(sq.allStreamIds) == 0 {
 		return writeRequest{}, false
 	}
 
 	// get the starting index for round-robin.
-	start := sq.nextIdx % uint32(len(sq.allSids))
+	start := sq.nextIdx % uint32(len(sq.allStreamIds))
 
 	// loop through all streams in a round-robin manner
-	for i := 0; i < len(sq.allSids); i++ {
-		idx := (int(start) + i) % len(sq.allSids)
-		sid := sq.allSids[idx]
+	for i := 0; i < len(sq.allStreamIds); i++ {
+		idx := (int(start) + i) % len(sq.allStreamIds)
+		sid := sq.allStreamIds[idx]
 		h := sq.streams[sid]
 		if h == nil || h.Len() == 0 {
 			continue
@@ -130,14 +130,14 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 			delete(sq.streams, sid)
 			delete(sq.lastVisits, sid)
 			// copy the rest of allSids to overwrite the removed sid
-			sq.allSids = append(sq.allSids[:idx], sq.allSids[idx+1:]...)
+			sq.allStreamIds = append(sq.allStreamIds[:idx], sq.allStreamIds[idx+1:]...)
 		}
 
 		// update nextIdx for round-robin
-		if len(sq.allSids) == 0 {
+		if len(sq.allStreamIds) == 0 {
 			sq.nextIdx = 0
 		} else {
-			sq.nextIdx = uint32((idx + 1) % len(sq.allSids))
+			sq.nextIdx = uint32((idx + 1) % len(sq.allStreamIds))
 		}
 		return req, true
 	}
