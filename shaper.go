@@ -84,11 +84,15 @@ func NewShaperQueue() *shaperQueue {
 func (sq *shaperQueue) Push(req writeRequest) {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
+
+	// create heap for the stream if not exists.
 	sid := req.frame.sid
 	if _, ok := sq.streams[sid]; !ok {
 		sq.streams[sid] = new(shaperHeap)
 		sq.allSids = append(sq.allSids, sid)
 	}
+
+	// push the request into the corresponding stream heap.
 	h := sq.streams[sid]
 	heap.Push(h, req)
 	sq.lastVisits[sid] = time.Now()
@@ -100,10 +104,12 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
 
+	// if there are no streams, return false
 	if len(sq.allSids) == 0 {
 		return writeRequest{}, false
 	}
 
+	// get the starting index for round-robin.
 	start := sq.nextIdx % uint32(len(sq.allSids))
 
 	// loop through all streams in a round-robin manner
@@ -115,11 +121,11 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 			continue
 		}
 
-		// pop from the heap
+		// pop the top request from the heap
 		req := heap.Pop(h).(writeRequest)
 		sq.count--
 
-		// If the heap is empty after popping, remove it from the map
+		// If the heap is empty after popping, remove it from the map if it has expired.
 		if h.Len() == 0 && sq.lastVisits[sid].Add(streamExpireDuration).Before(time.Now()) {
 			delete(sq.streams, sid)
 			delete(sq.lastVisits, sid)
@@ -127,7 +133,7 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 			sq.allSids = append(sq.allSids[:idx], sq.allSids[idx+1:]...)
 		}
 
-		// update nextSid for round-robin
+		// update nextIdx for round-robin
 		if len(sq.allSids) == 0 {
 			sq.nextIdx = 0
 		} else {
@@ -136,15 +142,18 @@ func (sq *shaperQueue) Pop() (req writeRequest, ok bool) {
 		return req, true
 	}
 
+	// no requests found in any stream
 	return writeRequest{}, false
 }
 
+// IsEmpty checks if the shaperQueue is empty.
 func (sq *shaperQueue) IsEmpty() bool {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
 	return sq.count == 0
 }
 
+// Len returns the total number of writeRequests in the shaperQueue.
 func (sq *shaperQueue) Len() int {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
