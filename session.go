@@ -119,9 +119,10 @@ type Session struct {
 
 	deadline atomic.Value
 
-	requestID uint32            // Monotonic increasing write request ID
-	shaper    chan writeRequest // a shaper for writing
-	writes    chan writeRequest
+	requestID      uint32            // Monotonic increasing write request ID
+	shaper         chan writeRequest // a shaper for writing
+	sq             *shaperQueue
+	chShaperNotify chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -134,10 +135,11 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.bucket = int32(config.MaxReceiveBuffer)
 	s.bucketNotify = make(chan struct{}, 1)
 	s.shaper = make(chan writeRequest)
-	s.writes = make(chan writeRequest)
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
+	s.chShaperNotify = make(chan struct{}, 1)
+	s.sq = NewShaperQueue()
 
 	if client {
 		s.nextStreamID = 1
@@ -479,42 +481,34 @@ func (s *Session) keepalive() {
 // shaperLoop implements a priority queue for write requests,
 // some control messages are prioritized over data messages
 func (s *Session) shaperLoop() {
-	reqs := NewShaperQueue()
-	var next writeRequest
-	var chWrite chan writeRequest
-	var chShaper chan writeRequest
+	ticker := time.NewTicker(100 * time.Millisecond)
+	chShaper := s.shaper
 
 	for {
-		// chWrite is not available until it has packet to send
-		if !reqs.IsEmpty() {
-			chWrite = s.writes
-			next, _ = reqs.Pop()
-		} else {
-			chWrite = nil
-		}
-
-		// control heap size, chShaper is not available until packets are less than maximum allowed
-		if reqs.Len() >= maxShaperSize {
-			chShaper = nil
-		} else {
-			chShaper = s.shaper
-		}
-
-		// assertion on non nil
-		if chShaper == nil && chWrite == nil {
-			panic("both channel are nil")
-		}
-
 		select {
 		case <-s.die:
 			return
 		case r := <-chShaper:
-			if chWrite != nil { // re-enqueue the request if there is a pending write
-				reqs.Push(next)
+			s.sq.Push(r)
+			s.notifyShaperRequests()
+			if s.sq.Len() >= maxShaperSize {
+				// stop accepting new requests temporarily
+				chShaper = nil
 			}
-			reqs.Push(r)
-		case chWrite <- next:
+		case <-ticker.C:
+			// periodic check to avoid starvation
+			if s.sq.Len() < maxShaperSize {
+				chShaper = s.shaper
+			}
 		}
+	}
+}
+
+// notifyShaperRequests notifies sendLoop that there are pending requests
+func (s *Session) notifyShaperRequests() {
+	select {
+	case s.chShaperNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -536,43 +530,51 @@ func (s *Session) sendLoop() {
 		buf = make([]byte, (1<<16)+headerSize)
 	}
 
+EVENT_LOOP:
 	for {
 		select {
 		case <-s.die:
 			return
-		case request := <-s.writes:
-			buf[0] = request.frame.ver
-			buf[1] = request.frame.cmd
-			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
-			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+		case <-s.chShaperNotify:
+			for {
+				request, ok := s.sq.Pop()
+				if !ok {
+					goto EVENT_LOOP
+				}
 
-			// support for scatter-gather I/O
-			if len(vec) > 0 {
-				vec[0] = buf[:headerSize]
-				vec[1] = request.frame.data
-				n, err = bw.WriteBuffers(vec)
-			} else {
-				copy(buf[headerSize:], request.frame.data)
-				n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
-			}
+				buf[0] = request.frame.ver
+				buf[1] = request.frame.cmd
+				binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
+				binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
 
-			n -= headerSize
-			if n < 0 {
-				n = 0
-			}
+				// support for scatter-gather I/O
+				if len(vec) > 0 {
+					vec[0] = buf[:headerSize]
+					vec[1] = request.frame.data
+					n, err = bw.WriteBuffers(vec)
+				} else {
+					copy(buf[headerSize:], request.frame.data)
+					n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
+				}
 
-			result := writeResult{
-				n:   n,
-				err: err,
-			}
+				n -= headerSize
+				if n < 0 {
+					n = 0
+				}
 
-			request.result <- result
-			close(request.result)
+				result := writeResult{
+					n:   n,
+					err: err,
+				}
 
-			// store conn error
-			if err != nil {
-				s.notifyWriteError(err)
-				return
+				request.result <- result
+				close(request.result)
+
+				// store conn error
+				if err != nil {
+					s.notifyWriteError(err)
+					return
+				}
 			}
 		}
 	}

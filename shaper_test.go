@@ -85,6 +85,7 @@ func TestShaperQueueFairness(t *testing.T) {
 
 	var wg sync.WaitGroup
 	sendCount := make([]uint64, streams)
+	var sendCountLock sync.Mutex
 
 	stop := make(chan struct{})
 
@@ -123,7 +124,9 @@ func TestShaperQueueFairness(t *testing.T) {
 			case <-ticker.C:
 				req, ok := sq.Pop()
 				if ok {
+					sendCountLock.Lock()
 					sendCount[req.frame.sid]++
+					sendCountLock.Unlock()
 				}
 			}
 		}
@@ -137,7 +140,9 @@ func TestShaperQueueFairness(t *testing.T) {
 			case <-stop:
 				return
 			case <-ticker.C:
+				sendCountLock.Lock()
 				fmt.Printf("[DEBUG] Current counts: %v\n", sendCount)
+				sendCountLock.Unlock()
 			}
 		}
 	}()
@@ -153,6 +158,8 @@ func TestShaperQueueFairness(t *testing.T) {
 
 	// ---- fairness check ----
 	total := uint64(0)
+	sendCountLock.Lock()
+	defer sendCountLock.Unlock()
 	for _, c := range sendCount {
 		total += c
 	}
@@ -179,6 +186,7 @@ func TestShaperQueue_FastWriteSlowRead(t *testing.T) {
 	sq := NewShaperQueue()
 
 	sendCount := make([]uint64, streams)
+	var sendCountLock sync.Mutex
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 
@@ -219,7 +227,9 @@ func TestShaperQueue_FastWriteSlowRead(t *testing.T) {
 
 			req, ok := sq.Pop()
 			if ok {
+				sendCountLock.Lock()
 				sendCount[req.frame.sid]++
+				sendCountLock.Unlock()
 			}
 
 			time.Sleep(consumerWait)
@@ -234,7 +244,9 @@ func TestShaperQueue_FastWriteSlowRead(t *testing.T) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				fmt.Printf("[DEBUG] Queue size=%d, counts=%v\n", sq.count, sendCount)
+				sendCountLock.Lock()
+				fmt.Printf("[DEBUG] Queue size=%d, counts=%v\n", sq.Len(), sendCount)
+				sendCountLock.Unlock()
 			}
 		}
 	}()
@@ -244,7 +256,9 @@ func TestShaperQueue_FastWriteSlowRead(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	fmt.Printf("=== FINAL ===\ncounts=%v\nqueue remaining=%d\n", sendCount, sq.count)
+	sendCountLock.Lock()
+	defer sendCountLock.Unlock()
+	fmt.Printf("=== FINAL ===\ncounts=%v\nqueue remaining=%d\n", sendCount, sq.Len())
 
 	// Check fairness
 	total := uint64(0)
