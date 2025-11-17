@@ -119,10 +119,11 @@ type Session struct {
 
 	deadline atomic.Value
 
-	requestID      uint32            // Monotonic increasing write request ID
-	shaper         chan writeRequest // a shaper for writing
-	sq             *shaperQueue
-	chShaperNotify chan struct{}
+	requestID        uint32            // Monotonic increasing write request ID
+	shaper           chan writeRequest // a shaper for writing
+	sq               *shaperQueue
+	chShaperPending  chan struct{}
+	chShaperConsumed chan struct{}
 }
 
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
@@ -138,7 +139,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
-	s.chShaperNotify = make(chan struct{}, 1)
+	s.chShaperPending = make(chan struct{}, 1)
+	s.chShaperConsumed = make(chan struct{}, 1)
 	s.sq = NewShaperQueue()
 
 	if client {
@@ -481,7 +483,6 @@ func (s *Session) keepalive() {
 // shaperLoop implements a priority queue for write requests,
 // some control messages are prioritized over data messages
 func (s *Session) shaperLoop() {
-	ticker := time.NewTicker(100 * time.Millisecond)
 	chShaper := s.shaper
 
 	for {
@@ -490,24 +491,29 @@ func (s *Session) shaperLoop() {
 			return
 		case r := <-chShaper:
 			s.sq.Push(r)
-			s.notifyShaperRequests()
+			s.notifyShaperPending()
 			if s.sq.Len() >= maxShaperSize {
 				// stop accepting new requests temporarily
 				chShaper = nil
 			}
-		case <-ticker.C:
-			// periodic check to avoid starvation
-			if s.sq.Len() < maxShaperSize {
-				chShaper = s.shaper
-			}
+		case <-s.chShaperConsumed:
+			chShaper = s.shaper
 		}
 	}
 }
 
-// notifyShaperRequests notifies sendLoop that there are pending requests
-func (s *Session) notifyShaperRequests() {
+// notifyShaperPending notifies sendLoop that there are pending requests
+func (s *Session) notifyShaperPending() {
 	select {
-	case s.chShaperNotify <- struct{}{}:
+	case s.chShaperPending <- struct{}{}:
+	default:
+	}
+}
+
+// notifyShaperConsumed notifies when shaper queue is being consumed
+func (s *Session) notifyShaperConsumed() {
+	select {
+	case s.chShaperConsumed <- struct{}{}:
 	default:
 	}
 }
@@ -535,13 +541,14 @@ EVENT_LOOP:
 		select {
 		case <-s.die:
 			return
-		case <-s.chShaperNotify:
+		case <-s.chShaperPending:
 			for {
 				request, ok := s.sq.Pop()
 				if !ok {
 					goto EVENT_LOOP
 				}
 
+				s.notifyShaperConsumed()
 				buf[0] = request.frame.ver
 				buf[1] = request.frame.cmd
 				binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
