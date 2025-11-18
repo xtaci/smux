@@ -35,6 +35,7 @@ import (
 
 const (
 	defaultAcceptBacklog = 1024
+	minShaperNotifySize  = 16
 	maxShaperSize        = 1024
 	openCloseTimeout     = 30 * time.Second // Timeout for opening/closing streams
 )
@@ -491,7 +492,9 @@ func (s *Session) shaperLoop() {
 			return
 		case r := <-chShaper:
 			s.sq.Push(r)
-			s.notifyShaperPending()
+			if len(chShaper) == 0 || s.sq.Len() > minShaperNotifySize {
+				s.notifyShaperPending()
+			}
 			if s.sq.Len() >= maxShaperSize {
 				// stop accepting new requests temporarily
 				chShaper = nil
