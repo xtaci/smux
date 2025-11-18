@@ -481,8 +481,9 @@ func (s *Session) keepalive() {
 	}
 }
 
-// shaperLoop implements a priority queue for write requests,
-// some control messages are prioritized over data messages
+// shaperLoop implements a priority queue and bandwidth shaping for write requests.
+// Eg: Control messages are prioritized over data messages, and shaper tries
+// it's best to keep fair bandwidth among streams.
 func (s *Session) shaperLoop() {
 	chShaper := s.shaper
 
@@ -492,14 +493,16 @@ func (s *Session) shaperLoop() {
 			return
 		case r := <-chShaper:
 			s.sq.Push(r)
+			// notify sendLoop there are pending requests
 			if len(chShaper) == 0 || s.sq.Len() > minShaperNotifySize {
 				s.notifyShaperPending()
 			}
 			if s.sq.Len() >= maxShaperSize {
-				// stop accepting new requests temporarily
+				// stop accepting new requests temporarily if shaper queue is full
 				chShaper = nil
 			}
 		case <-s.chShaperConsumed:
+			// re-enable shaper channel
 			chShaper = s.shaper
 		}
 	}
