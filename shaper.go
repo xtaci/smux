@@ -66,6 +66,7 @@ const (
 	streamExpireDuration = 1 * time.Minute
 )
 
+// shaperQueue manages multiple streams of writeRequests using a round-robin scheduling algorithm.
 type shaperQueue struct {
 	streams map[uint32]*shaperHeap
 	rrList  *list.List    // list of sid (RR queue)
@@ -81,6 +82,7 @@ func NewShaperQueue() *shaperQueue {
 	}
 }
 
+// Push adds a writeRequest to the shaperQueue.
 func (sq *shaperQueue) Push(req writeRequest) {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
