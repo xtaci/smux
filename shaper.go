@@ -71,7 +71,7 @@ type shaperQueue struct {
 	streams map[uint32]*shaperHeap
 	rrList  *list.List    // list of sid (RR queue)
 	next    *list.Element // next node to pop
-	count   uint32
+	count   int
 	mu      sync.Mutex
 }
 
@@ -172,5 +172,5 @@ func (sq *shaperQueue) IsEmpty() bool {
 func (sq *shaperQueue) Len() int {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
-	return int(sq.count)
+	return sq.count
 }
