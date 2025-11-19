@@ -26,7 +26,6 @@ import (
 	"container/heap"
 	"container/list"
 	"sync"
-	"time"
 )
 
 // _itimediff returns the time difference between two uint32 values.
@@ -61,10 +60,6 @@ func (h *shaperHeap) Pop() interface{} {
 	*h = old[0 : n-1]
 	return x
 }
-
-const (
-	streamExpireDuration = 1 * time.Minute
-)
 
 // shaperQueue manages multiple streams of writeRequests using a round-robin scheduling algorithm.
 type shaperQueue struct {
