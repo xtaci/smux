@@ -50,10 +50,10 @@ func (h shaperHeap) Less(i, j int) bool {
 	return _itimediff(h[j].seq, h[i].seq) > 0
 }
 
-func (h shaperHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *shaperHeap) Push(x interface{}) { *h = append(*h, x.(writeRequest)) }
+func (h shaperHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *shaperHeap) Push(x any)   { *h = append(*h, x.(writeRequest)) }
 
-func (h *shaperHeap) Pop() interface{} {
+func (h *shaperHeap) Pop() any {
 	old := *h
 	n := len(old)
 	x := old[n-1]
