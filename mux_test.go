@@ -44,7 +44,8 @@ func TestConfig(t *testing.T) {
 	err := VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -53,7 +54,8 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -61,7 +63,8 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -69,7 +72,8 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -77,7 +81,8 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -85,7 +90,8 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	config = DefaultConfig()
@@ -94,15 +100,18 @@ func TestConfig(t *testing.T) {
 	err = VerifyConfig(config)
 	t.Log(err)
 	if err == nil {
-		t.Fatal(err)
+		t.Fatal("expected an error")
+		return
 	}
 
 	var bts buffer
 	if _, err := Server(&bts, config); err == nil {
 		t.Fatal("server started with wrong config")
+		return
 	}
 
 	if _, err := Client(&bts, config); err == nil {
 		t.Fatal("client started with wrong config")
+		return
 	}
 }

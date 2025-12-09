@@ -32,30 +32,39 @@ func TestAllocGet(t *testing.T) {
 	alloc := NewAllocator()
 	if alloc.Get(0) != nil {
 		t.Fatal(0)
+		return
 	}
 	if len(*alloc.Get(1)) != 1 {
 		t.Fatal(1)
+		return
 	}
 	if len(*alloc.Get(2)) != 2 {
 		t.Fatal(2)
+		return
 	}
 	if len(*alloc.Get(3)) != 3 || cap(*alloc.Get(3)) != 4 {
 		t.Fatal(3)
+		return
 	}
 	if len(*alloc.Get(4)) != 4 {
 		t.Fatal(4)
+		return
 	}
 	if len(*alloc.Get(1023)) != 1023 || cap(*alloc.Get(1023)) != 1024 {
 		t.Fatal(1023)
+		return
 	}
 	if len(*alloc.Get(1024)) != 1024 {
 		t.Fatal(1024)
+		return
 	}
 	if len(*alloc.Get(65536)) != 65536 {
 		t.Fatal(65536)
+		return
 	}
 	if alloc.Get(65537) != nil {
 		t.Fatal(65537)
+		return
 	}
 }
 
@@ -63,26 +72,32 @@ func TestAllocPut(t *testing.T) {
 	alloc := NewAllocator()
 	if err := alloc.Put(nil); err == nil {
 		t.Fatal("put nil misbehavior")
+		return
 	}
 	b := make([]byte, 3)
 	if err := alloc.Put(&b); err == nil {
 		t.Fatal("put elem:3 []bytes misbehavior")
+		return
 	}
 	b = make([]byte, 4)
 	if err := alloc.Put(&b); err != nil {
 		t.Fatal("put elem:4 []bytes misbehavior")
+		return
 	}
 	b = make([]byte, 1023, 1024)
 	if err := alloc.Put(&b); err != nil {
 		t.Fatal("put elem:1024 []bytes misbehavior")
+		return
 	}
 	b = make([]byte, 65536)
 	if err := alloc.Put(&b); err != nil {
 		t.Fatal("put elem:65536 []bytes misbehavior")
+		return
 	}
 	b = make([]byte, 65537)
 	if err := alloc.Put(&b); err == nil {
 		t.Fatal("put elem:65537 []bytes misbehavior")
+		return
 	}
 }
 
@@ -93,6 +108,7 @@ func TestAllocPutThenGet(t *testing.T) {
 	newData := alloc.Get(4)
 	if cap(*data) != cap(*newData) {
 		t.Fatal("different cap while alloc.Get()")
+		return
 	}
 }
 
@@ -115,6 +131,7 @@ func TestDebrujin(t *testing.T) {
 		b := bits.Len(uint(i))
 		if a+1 != b {
 			t.Fatal("debrujin")
+			return
 		}
 	}
 }
