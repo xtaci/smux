@@ -911,7 +911,7 @@ func TestWriteFrameInternal(t *testing.T) {
 		timer := time.NewTimer(session.config.KeepAliveTimeout)
 		defer timer.Stop()
 
-		session.writeFrameInternal(f, timer.C, CLSDATA)
+		writeFrameInternal(session, f, timer.C, CLSDATA)
 	}
 
 	// random cmds
@@ -927,14 +927,14 @@ func TestWriteFrameInternal(t *testing.T) {
 		timer := time.NewTimer(session.config.KeepAliveTimeout)
 		defer timer.Stop()
 
-		session.writeFrameInternal(f, timer.C, CLSDATA)
+		writeFrameInternal(session, f, timer.C, CLSDATA)
 	}
 	//deadline occur
 	{
 		c := make(chan time.Time)
 		close(c)
 		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
-		_, err := session.writeFrameInternal(f, c, CLSDATA)
+		_, err := writeFrameInternal(session, f, c, CLSDATA)
 		if !strings.Contains(err.Error(), "timeout") {
 			t.Fatal("write frame with deadline failed", err)
 		}
@@ -959,7 +959,7 @@ func TestWriteFrameInternal(t *testing.T) {
 			time.Sleep(time.Second)
 			close(c)
 		}()
-		_, err = session.writeFrameInternal(f, c, CLSDATA)
+		_, err = writeFrameInternal(session, f, c, CLSDATA)
 		if !strings.Contains(err.Error(), "closed pipe") {
 			t.Fatal("write frame with to closed conn failed", err)
 		}

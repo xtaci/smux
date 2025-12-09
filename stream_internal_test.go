@@ -275,7 +275,7 @@ func TestWriteFrameInternalShortWriteReturnsError(t *testing.T) {
 
 	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
 	frame.data = []byte("payload")
-	n, err := sess.writeFrameInternal(frame, nil, CLSDATA)
+	n, err := writeFrameInternal[struct{}](sess, frame, nil, CLSDATA)
 	if err != io.ErrShortWrite {
 		t.Fatalf("writeFrameInternal error = %v; want %v", err, io.ErrShortWrite)
 	}
@@ -305,7 +305,7 @@ func TestWriteFrameInternalShortWriteFromWriteBuffersReturnsError(t *testing.T) 
 
 	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
 	frame.data = []byte("payload")
-	n, err := sess.writeFrameInternal(frame, nil, CLSDATA)
+	n, err := writeFrameInternal[struct{}](sess, frame, nil, CLSDATA)
 	if err != io.ErrShortWrite {
 		t.Fatalf("writeFrameInternal error = %v; want %v", err, io.ErrShortWrite)
 	}
@@ -340,7 +340,7 @@ func TestWriteFrameInternalWriteBuffersErrorPreserved(t *testing.T) {
 
 	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
 	frame.data = []byte("payload")
-	if _, err := sess.writeFrameInternal(frame, nil, CLSDATA); err != wantErr {
+	if _, err := writeFrameInternal[struct{}](sess, frame, nil, CLSDATA); err != wantErr {
 		t.Fatalf("writeFrameInternal error = %v; want %v", err, wantErr)
 	}
 }
@@ -412,6 +412,19 @@ func TestDiscardPendingWritesSignalsWaitingWriters(t *testing.T) {
 	}
 }
 
+// stopTimer stops the supplied timer and drains its channel if needed.
+func stopTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
 func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T) {
 	cfg := DefaultConfig()
 	sess := &Session{
@@ -429,7 +442,7 @@ func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.writeFrameInternal(newFrame(byte(cfg.Version), cmdPSH, 1), deadline.C, CLSDATA)
+		_, err := writeFrameInternal(sess, newFrame(byte(cfg.Version), cmdPSH, 1), deadline.C, CLSDATA)
 		done <- err
 	}()
 
@@ -539,7 +552,7 @@ func newUnitTestStream() *stream {
 
 func TestStreamWaitReadTimeout(t *testing.T) {
 	s := newUnitTestStream()
-	s.readDeadline.Store(time.Now().Add(20 * time.Millisecond))
+	s.readDeadline.Set(time.Now().Add(20 * time.Millisecond))
 	if err := s.waitRead(); err != ErrTimeout {
 		t.Fatalf("expected ErrTimeout, got %v", err)
 	}
@@ -689,7 +702,7 @@ func TestSendWindowUpdateTimeout(t *testing.T) {
 		die:                make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
-	st.readDeadline.Store(time.Now().Add(-time.Second))
+	st.readDeadline.Set(time.Now().Add(-time.Second))
 
 	if err := st.sendWindowUpdate(1); err != ErrTimeout {
 		t.Fatalf("expected ErrTimeout, got %v", err)
@@ -754,7 +767,7 @@ func TestWriteV2ConsumedError(t *testing.T) {
 func TestWriteV2TimeoutWhenWindowZero(t *testing.T) {
 	s := newUnitTestStreamV2()
 	atomic.StoreUint32(&s.peerWindow, 0)
-	s.writeDeadline.Store(time.Now().Add(-time.Second))
+	s.writeDeadline.Set(time.Now().Add(-time.Second))
 
 	if _, err := s.writeV2([]byte("data")); err != ErrTimeout {
 		t.Fatalf("expected ErrTimeout, got %v", err)

@@ -26,9 +26,12 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pion/transport/v5/deadline"
 )
 
 // Stream is a wrapper around stream that exposes the public API.
@@ -64,8 +67,7 @@ type stream struct {
 	writeClosedOnce sync.Once // Ensures chWriteClosed is closed only once
 
 	// read/write deadline
-	readDeadline  atomic.Value
-	writeDeadline atomic.Value
+	readDeadline, writeDeadline *deadline.Deadline
 
 	// v2 stream fields(flow control)
 	numRead    uint32 // count num of bytes read
@@ -203,6 +205,14 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.windowUpdateThreshold = uint32(sess.config.MaxStreamBuffer / 2) // cache threshold
 	// pre-allocate ring buffer to reduce allocations during data transfer
 	s.bufferRing = newBufferRing(defaultBufferRingCapacity)
+
+	s.readDeadline = deadline.New()
+	s.writeDeadline = deadline.New()
+
+	// Stop pending timers so closed sessions do not retain deadline resources
+	// until their deadlines expire.
+	runtime.AddCleanup(s, freeDeadline, s.readDeadline)
+	runtime.AddCleanup(s, freeDeadline, s.writeDeadline)
 
 	return s
 }
@@ -473,33 +483,17 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 
 // sendWindowUpdate reports the number of bytes consumed and the receive window to the peer.
 func (s *stream) sendWindowUpdate(consumed uint32) error {
-	var timer *time.Timer
-	var deadline <-chan time.Time
-	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer = time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
 	frame := newFrame(byte(s.sess.config.Version), cmdUPD, s.id)
 	var hdr updHeader
 	binary.LittleEndian.PutUint32(hdr[:], consumed)
 	binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
 	frame.data = hdr[:]
-	_, err := s.sess.writeFrameInternal(frame, deadline, CLSCTRL) // <-- NOTE(x): use control channel
+	_, err := writeFrameInternal(s.sess, frame, s.readDeadline.Done(), CLSCTRL) // <-- NOTE(x): use control channel
 	return err
 }
 
 // waitRead blocks until a read event occurs or a deadline is reached.
 func (s *stream) waitRead() error {
-	var timer *time.Timer
-	var deadline <-chan time.Time
-	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer = time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
 	select {
 	case <-s.chReaderWakeup: // notify some data has arrived, or closed
 		return nil
@@ -515,7 +509,7 @@ func (s *stream) waitRead() error {
 		return s.sess.socketReadError
 	case <-s.sess.chProtoError:
 		return s.sess.protoError
-	case <-deadline:
+	case <-s.readDeadline.Done():
 		return ErrTimeout
 	case <-s.die:
 		if s.isNormalHalfClosed() {
@@ -570,14 +564,6 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 		return 0, err
 	}
 
-	// create write deadline timer
-	var deadline <-chan time.Time
-	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
 	// frame split and transmit
 	sent := 0
 	frame := newFrame(byte(s.sess.config.Version), cmdPSH, s.id)
@@ -588,7 +574,7 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 		}
 
 		frame.data = b[:size]
-		n, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+		n, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 		atomic.AddUint32(&s.numWritten, uint32(size))
 		sent += n
 		if err != nil {
@@ -617,30 +603,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 	sent := 0
 	frame := newFrame(byte(s.sess.config.Version), cmdPSH, s.id)
 
-	var deadlineTimer *time.Timer
-	defer func() {
-		stopTimer(deadlineTimer)
-	}()
-
 	for {
-		deadline := (<-chan time.Time)(nil)
-		if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-			dur := time.Until(d)
-			if dur < 0 {
-				dur = 0
-			}
-			if deadlineTimer == nil {
-				deadlineTimer = time.NewTimer(dur)
-			} else {
-				stopTimer(deadlineTimer)
-				deadlineTimer.Reset(dur)
-			}
-			deadline = deadlineTimer.C
-		} else if deadlineTimer != nil {
-			stopTimer(deadlineTimer)
-			deadlineTimer = nil
-		}
-
 		// per stream sliding window control
 		// [.... [consumed... numWritten] ... win... ]
 		// [.... [consumed...................+rmtwnd]]
@@ -676,7 +639,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 				frame.data = bts[:size]
 
 				// transmit of frame
-				nw, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+				nw, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 				atomic.AddUint32(&s.numWritten, uint32(size))
 				sent += nw
 				if err != nil {
@@ -703,7 +666,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 			return sent, io.ErrClosedPipe
 		case <-s.die:
 			return sent, io.ErrClosedPipe
-		case <-deadline:
+		case <-s.writeDeadline.Done():
 			return sent, ErrTimeout
 		case <-s.sess.chSocketWriteError:
 			return sent, s.sess.socketWriteError
@@ -734,7 +697,7 @@ func (s *stream) CloseWrite() error {
 	timer := time.NewTimer(openCloseTimeout)
 	defer timer.Stop()
 
-	_, err := s.sess.writeFrameInternal(f, timer.C, CLSDATA)
+	_, err := writeFrameInternal(s.sess, f, timer.C, CLSDATA)
 	s.tryHalfCloseCleanup()
 	return err
 }
@@ -769,7 +732,7 @@ func (s *stream) Close() error {
 	timer := time.NewTimer(openCloseTimeout)
 	defer timer.Stop()
 
-	_, err := s.sess.writeFrameInternal(f, timer.C, CLSDATA) // NOTE(x): use data channel, EOF as data.
+	_, err := writeFrameInternal(s.sess, f, timer.C, CLSDATA) // NOTE(x): use data channel, EOF as data.
 	s.sess.streamClosed(s.id)
 	return err
 }
@@ -783,7 +746,7 @@ func (s *stream) GetDieCh() <-chan struct{} {
 // net.Conn.SetReadDeadline.
 // A zero time value disables the deadline.
 func (s *stream) SetReadDeadline(t time.Time) error {
-	s.readDeadline.Store(t)
+	s.readDeadline.Set(t)
 	s.wakeupReader()
 	return nil
 }
@@ -792,7 +755,7 @@ func (s *stream) SetReadDeadline(t time.Time) error {
 // net.Conn.SetWriteDeadline.
 // A zero time value disables the deadline.
 func (s *stream) SetWriteDeadline(t time.Time) error {
-	s.writeDeadline.Store(t)
+	s.writeDeadline.Set(t)
 	s.wakeupWriter()
 	return nil
 }
@@ -944,17 +907,4 @@ func (s *stream) isNormalHalfClosed() bool {
 
 func (s *stream) isForcedClosed() bool {
 	return atomic.LoadUint32(&s.forcedClose) != 0
-}
-
-// stopTimer stops the supplied timer and drains its channel if needed.
-func stopTimer(t *time.Timer) {
-	if t == nil {
-		return
-	}
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
-		}
-	}
 }
