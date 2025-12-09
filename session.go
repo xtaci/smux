@@ -27,9 +27,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pion/transport/v5/deadline"
 )
 
 const (
@@ -122,8 +125,8 @@ type Session struct {
 
 	chAccepts chan *stream
 
-	sessionIsActive int32        // flag session is active
-	acceptDeadline  atomic.Value // deadline for Accept()
+	sessionIsActive int32              // flag session is active
+	acceptDeadline  *deadline.Deadline // deadline for Accept()
 
 	requestID        uint32            // Monotonic increasing write request ID
 	writeReqLock     sync.RWMutex      // fences write request admission during shutdown
@@ -156,6 +159,10 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	if client {
 		s.nextStreamID = 1
 	}
+
+	s.acceptDeadline = deadline.New()
+	// Stop the Accept deadline timer when the listener is closed.
+	runtime.AddCleanup(s, freeDeadline, s.acceptDeadline)
 
 	go s.shaperLoop()
 	go s.recvLoop()
@@ -243,13 +250,6 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, io.ErrClosedPipe
 	}
 
-	var deadline <-chan time.Time
-	if d, ok := s.acceptDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
 	select {
 	case stream := <-s.chAccepts:
 		if s.IsClosed() {
@@ -262,7 +262,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		// finalizer would then close the stream mid-transfer and silently drop
 		// data. OpenStream disabled the same finalizer for issue #997.
 		return wrapper, nil
-	case <-deadline:
+	case <-s.acceptDeadline.Done():
 		return nil, ErrTimeout
 	case <-s.chSocketReadError:
 		return nil, s.socketReadError
@@ -382,7 +382,7 @@ func (s *Session) NumStreams() int {
 // SetDeadline sets a deadline used by Accept* calls.
 // A zero time value disables the deadline.
 func (s *Session) SetDeadline(t time.Time) error {
-	s.acceptDeadline.Store(t)
+	s.acceptDeadline.Set(t)
 	return nil
 }
 
@@ -584,7 +584,7 @@ func (s *Session) keepalive() {
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
+			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
 			s.notifyBucket() // force a wakeup signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.sessionIsActive, 1, 0) {
@@ -775,10 +775,11 @@ func (s *Session) writeControlFrame(f Frame) (n int, err error) {
 	timer := time.NewTimer(openCloseTimeout)
 	defer timer.Stop()
 
-	return s.writeFrameInternal(f, timer.C, CLSCTRL)
+	return writeFrameInternal(s, f, timer.C, CLSCTRL)
 }
 
-func (s *Session) sendWriteRequest(req writeRequest, deadline <-chan time.Time) (ret error) {
+// TODO: generic methods requires Go 1.27 or later, but we want to support Go 1.24 or later.
+func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) error {
 	s.writeReqLock.RLock()
 	defer s.writeReqLock.RUnlock()
 
@@ -805,16 +806,20 @@ func (s *Session) sendWriteRequest(req writeRequest, deadline <-chan time.Time) 
 }
 
 // internal writeFrame version to support deadline used in keepalive
-func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class CLASSID) (n int, err error) {
+func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLASSID) (n int, err error) {
 	// get result channel from pool
 	resultCh := resultChanPool.Get().(chan writeResult)
 
-	err = s.sendWriteRequest(writeRequest{
-		class:  class,
-		frame:  f,
-		seq:    atomic.AddUint32(&s.requestID, 1),
-		result: resultCh,
-	}, deadline)
+	err = sendWriteRequest(
+		s,
+		writeRequest{
+			class:  class,
+			frame:  f,
+			seq:    atomic.AddUint32(&s.requestID, 1),
+			result: resultCh,
+		},
+		deadline,
+	)
 	if err != nil {
 		goto recycle
 	}
