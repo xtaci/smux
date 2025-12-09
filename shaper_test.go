@@ -123,11 +123,13 @@ func TestShaperQueueFairness(t *testing.T) {
 				return
 			case <-ticker.C:
 				req, ok := sq.Pop()
-				if ok {
-					sendCountLock.Lock()
-					sendCount[req.frame.sid]++
-					sendCountLock.Unlock()
+				if !ok {
+					continue
 				}
+
+				sendCountLock.Lock()
+				sendCount[req.frame.sid]++
+				sendCountLock.Unlock()
 			}
 		}
 	}()
