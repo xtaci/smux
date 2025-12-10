@@ -1000,6 +1000,152 @@ func TestWriteDeadline(t *testing.T) {
 	session.Close()
 }
 
+func Test8GBTransferV1(t *testing.T) {
+	_, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	const N = 8 << 30 // 8GB
+
+	// Initialize random sources with the same seed for writer and reader
+	seed := time.Now().UnixNano()
+	writerSrc := rand.NewSource(seed)
+	readerSrc := rand.NewSource(seed)
+	sndbuf := make([]byte, 1<<24) // 16MB buffer
+	rcvbuf := make([]byte, 1<<24) // 16MB buffer
+	bytesSent := int64(0)
+	bytesReceived := int64(0)
+	// Writer goroutine
+	go func() {
+		r := rand.New(writerSrc)
+		for bytesSent < N {
+			// Fill buffer with random data
+			for i := range sndbuf {
+				sndbuf[i] = byte(r.Int())
+			}
+			toWrite := int64(len(sndbuf))
+			if N-bytesSent < toWrite {
+				toWrite = N - bytesSent
+			}
+			n, err := stream.Write(sndbuf[:toWrite])
+			if err != nil {
+				t.Errorf("Write error: %v", err)
+				return
+			}
+			bytesSent += int64(n)
+			if bytesSent%(1<<30) == 0 { // Log every 1GB
+				t.Log("Sent:", bytesSent, "bytes")
+			}
+		}
+		//stream.Close()
+	}()
+	// Reader goroutine
+	r := rand.New(readerSrc)
+	for bytesReceived < N {
+		toRead := int64(len(rcvbuf))
+		if N-bytesReceived < toRead {
+			toRead = N - bytesReceived
+		}
+		n, err := stream.Read(rcvbuf[:toRead])
+		if err != nil && err != io.EOF {
+			t.Fatalf("Read error: %v", err)
+		}
+		// Validate received data
+		for i := 0; i < n; i++ {
+			expectedByte := byte(r.Int())
+			if rcvbuf[i] != expectedByte {
+				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
+			}
+		}
+		bytesReceived += int64(n)
+		if bytesReceived%(1<<30) == 0 { // Log every 1GB
+			t.Log("Received:", bytesReceived, "bytes")
+		}
+	}
+	session.Close()
+}
+
+// This test validates large data transfer (8GB) over a single stream with random data
+func Test8GBTransferV2(t *testing.T) {
+	config := DefaultConfig()
+	config.Version = 2
+	_, stop, cli, err := setupServerV2(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, config)
+	stream, _ := session.OpenStream()
+	const N = 8 << 30 // 8GB
+
+	// Initialize random sources with the same seed for writer and reader
+	seed := time.Now().UnixNano()
+	writerSrc := rand.NewSource(seed)
+	readerSrc := rand.NewSource(seed)
+
+	sndbuf := make([]byte, 1<<24) // 16MB buffer
+	rcvbuf := make([]byte, 1<<24) // 16MB buffer
+
+	bytesSent := int64(0)
+	bytesReceived := int64(0)
+
+	// Writer goroutine
+	go func() {
+		r := rand.New(writerSrc)
+		for bytesSent < N {
+			// Fill buffer with random data
+			for i := range sndbuf {
+				sndbuf[i] = byte(r.Int())
+			}
+
+			toWrite := int64(len(sndbuf))
+			if N-bytesSent < toWrite {
+				toWrite = N - bytesSent
+			}
+			n, err := stream.Write(sndbuf[:toWrite])
+			if err != nil {
+				t.Errorf("Write error: %v", err)
+				return
+			}
+			bytesSent += int64(n)
+
+			if bytesSent%(1<<30) == 0 { // Log every 1GB
+				t.Log("Sent:", bytesSent, "bytes")
+			}
+		}
+		//stream.Close()
+	}()
+
+	// Reader goroutine
+	r := rand.New(readerSrc)
+	for bytesReceived < N {
+		toRead := int64(len(rcvbuf))
+		if N-bytesReceived < toRead {
+			toRead = N - bytesReceived
+		}
+		n, err := stream.Read(rcvbuf[:toRead])
+		if err != nil && err != io.EOF {
+			t.Fatalf("Read error: %v", err)
+		}
+
+		// Validate received data
+		for i := 0; i < n; i++ {
+			expectedByte := byte(r.Int())
+			if rcvbuf[i] != expectedByte {
+				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
+			}
+		}
+		bytesReceived += int64(n)
+		if bytesReceived%(1<<30) == 0 { // Log every 1GB
+			t.Log("Received:", bytesReceived, "bytes")
+		}
+	}
+	session.Close()
+}
+
 func BenchmarkAcceptClose(b *testing.B) {
 	_, stop, cli, err := setupServer(b)
 	if err != nil {
