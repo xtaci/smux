@@ -1010,61 +1010,7 @@ func Test8GBTransferV1(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 8 << 30 // 8GB
 
-	// Initialize random sources with the same seed for writer and reader
-	seed := time.Now().UnixNano()
-	writerSrc := rand.NewSource(seed)
-	readerSrc := rand.NewSource(seed)
-	sndbuf := make([]byte, 1<<24) // 16MB buffer
-	rcvbuf := make([]byte, 1<<24) // 16MB buffer
-	bytesSent := int64(0)
-	bytesReceived := int64(0)
-	// Writer goroutine
-	go func() {
-		r := rand.New(writerSrc)
-		for bytesSent < N {
-			// Fill buffer with random data
-			for i := range sndbuf {
-				sndbuf[i] = byte(r.Int())
-			}
-			toWrite := int64(len(sndbuf))
-			if N-bytesSent < toWrite {
-				toWrite = N - bytesSent
-			}
-			n, err := stream.Write(sndbuf[:toWrite])
-			if err != nil {
-				t.Errorf("Write error: %v", err)
-				return
-			}
-			bytesSent += int64(n)
-			if bytesSent%(1<<30) == 0 { // Log every 1GB
-				t.Log("Sent:", bytesSent, "bytes")
-			}
-		}
-		//stream.Close()
-	}()
-	// Reader goroutine
-	r := rand.New(readerSrc)
-	for bytesReceived < N {
-		toRead := int64(len(rcvbuf))
-		if N-bytesReceived < toRead {
-			toRead = N - bytesReceived
-		}
-		n, err := stream.Read(rcvbuf[:toRead])
-		if err != nil && err != io.EOF {
-			t.Fatalf("Read error: %v", err)
-		}
-		// Validate received data
-		for i := 0; i < n; i++ {
-			expectedByte := byte(r.Int())
-			if rcvbuf[i] != expectedByte {
-				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
-			}
-		}
-		bytesReceived += int64(n)
-		if bytesReceived%(1<<30) == 0 { // Log every 1GB
-			t.Log("Received:", bytesReceived, "bytes")
-		}
-	}
+	testRandomLength(t, stream, N)
 	session.Close()
 }
 
@@ -1081,68 +1027,7 @@ func Test8GBTransferV2(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 8 << 30 // 8GB
 
-	// Initialize random sources with the same seed for writer and reader
-	seed := time.Now().UnixNano()
-	writerSrc := rand.NewSource(seed)
-	readerSrc := rand.NewSource(seed)
-
-	sndbuf := make([]byte, 1<<24) // 16MB buffer
-	rcvbuf := make([]byte, 1<<24) // 16MB buffer
-
-	bytesSent := int64(0)
-	bytesReceived := int64(0)
-
-	// Writer goroutine
-	go func() {
-		r := rand.New(writerSrc)
-		for bytesSent < N {
-			// Fill buffer with random data
-			for i := range sndbuf {
-				sndbuf[i] = byte(r.Int())
-			}
-
-			toWrite := int64(len(sndbuf))
-			if N-bytesSent < toWrite {
-				toWrite = N - bytesSent
-			}
-			n, err := stream.Write(sndbuf[:toWrite])
-			if err != nil {
-				t.Errorf("Write error: %v", err)
-				return
-			}
-			bytesSent += int64(n)
-
-			if bytesSent%(1<<30) == 0 { // Log every 1GB
-				t.Log("Sent:", bytesSent, "bytes")
-			}
-		}
-		//stream.Close()
-	}()
-
-	// Reader goroutine
-	r := rand.New(readerSrc)
-	for bytesReceived < N {
-		toRead := int64(len(rcvbuf))
-		if N-bytesReceived < toRead {
-			toRead = N - bytesReceived
-		}
-		n, err := stream.Read(rcvbuf[:toRead])
-		if err != nil && err != io.EOF {
-			t.Fatalf("Read error: %v", err)
-		}
-
-		// Validate received data
-		for i := 0; i < n; i++ {
-			expectedByte := byte(r.Int())
-			if rcvbuf[i] != expectedByte {
-				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
-			}
-		}
-		bytesReceived += int64(n)
-		if bytesReceived%(1<<30) == 0 { // Log every 1GB
-			t.Log("Received:", bytesReceived, "bytes")
-		}
-	}
+	testRandomLength(t, stream, N)
 	session.Close()
 }
 
@@ -1157,60 +1042,7 @@ func TestRandomLengthRandomDataTransferV1(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 1 << 30 // 1GB
 
-	seed := time.Now().UnixNano()
-	writerSrc := rand.NewSource(seed)
-	readerSrc := rand.NewSource(seed)
-
-	bytesSent := int64(0)
-	bytesReceived := int64(0)
-
-	// Writer goroutine
-	go func() {
-		r := rand.New(writerSrc)
-		for bytesSent < N {
-			length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
-			if bytesSent+int64(length) > N {
-				length = int(N - bytesSent)
-			}
-			sndbuf := make([]byte, length)
-			for i := range sndbuf {
-				sndbuf[i] = byte(r.Int())
-			}
-			n, err := stream.Write(sndbuf)
-			if err != nil {
-				t.Errorf("Write error: %v", err)
-				return
-			}
-			bytesSent += int64(n)
-			if bytesSent%(1<<28) == 0 { // Log every 256MB
-				t.Log("Sent:", bytesSent, "bytes")
-			}
-		}
-	}()
-
-	// Reader goroutine
-	r := rand.New(readerSrc)
-	for bytesReceived < N {
-		length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
-		if bytesReceived+int64(length) > N {
-			length = int(N - bytesReceived)
-		}
-		rcvbuf := make([]byte, length)
-		n, err := stream.Read(rcvbuf)
-		if err != nil && err != io.EOF {
-			t.Fatalf("Read error: %v", err)
-		}
-		for i := 0; i < n; i++ {
-			expectedByte := byte(r.Int())
-			if rcvbuf[i] != expectedByte {
-				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
-			}
-		}
-		bytesReceived += int64(n)
-		if bytesReceived%(1<<28) == 0 { // Log every 256MB
-			t.Log("Received:", bytesReceived, "bytes")
-		}
-	}
+	testRandomLength(t, stream, N)
 	session.Close()
 }
 
@@ -1226,6 +1058,11 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 1 << 30 // 1GB
 
+	testRandomLength(t, stream, N)
+	session.Close()
+}
+
+func testRandomLength(t *testing.T, stream *Stream, N int64) {
 	seed := time.Now().UnixNano()
 	writerSrc := rand.NewSource(seed)
 	readerSrc := rand.NewSource(seed)
@@ -1236,6 +1073,7 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 	// Writer goroutine
 	go func() {
 		r := rand.New(writerSrc)
+		lastPrint := int64(0)
 		for bytesSent < N {
 			length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
 			if bytesSent+int64(length) > N {
@@ -1251,7 +1089,8 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 				return
 			}
 			bytesSent += int64(n)
-			if bytesSent%(1<<28) == 0 { // Log every 256MB
+			if bytesSent-lastPrint >= (1 << 28) { // Log every 256MB
+				lastPrint = bytesSent
 				t.Log("Sent:", bytesSent, "bytes")
 			}
 		}
@@ -1259,6 +1098,7 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 
 	// Reader goroutine
 	r := rand.New(readerSrc)
+	lastPrint := int64(0)
 	for bytesReceived < N {
 		length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
 		if bytesReceived+int64(length) > N {
@@ -1276,11 +1116,12 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 			}
 		}
 		bytesReceived += int64(n)
-		if bytesReceived%(1<<28) == 0 { // Log every 256MB
+		if bytesReceived-lastPrint >= (1 << 28) { // Log every 256MB
+			lastPrint = bytesReceived
 			t.Log("Received:", bytesReceived, "bytes")
 		}
 	}
-	session.Close()
+
 }
 
 func BenchmarkAcceptClose(b *testing.B) {
