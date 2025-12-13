@@ -452,7 +452,7 @@ func (s *Session) recvLoop() {
 				stream.pushBytes(pNewbuf)
 				// deduct tokens from the bucket
 				atomic.AddInt32(&s.bucket, -int32(written))
-				stream.notifyReadEvent()
+				stream.wakeupReader()
 			} else {
 				// data directed to a missing/closed stream, recycle the buffer immediately.
 				defaultAllocator.Put(pNewbuf)
