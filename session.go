@@ -172,13 +172,16 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, ErrGoAway
 	}
 
-	s.nextStreamID += 2
-	sid := s.nextStreamID
-	if sid == sid%2 { // stream-id overflows
+	// check for stream id overflow
+	if s.nextStreamID+2 < s.nextStreamID {
 		s.goAway = 1
 		s.nextStreamIDLock.Unlock()
 		return nil, ErrGoAway
 	}
+
+	// allocate next stream id
+	s.nextStreamID += 2
+	sid := s.nextStreamID
 	s.nextStreamIDLock.Unlock()
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
