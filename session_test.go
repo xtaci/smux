@@ -319,14 +319,33 @@ func TestGetDieCh(t *testing.T) {
 	}
 	defer ss.Close()
 	dieCh := ss.GetDieCh()
+	errCh := make(chan error, 1)
+
+	go func() { // server reader
+		// keep reading until error
+		buf := make([]byte, 1024)
+		for {
+			_, err := ss.Read(buf)
+			if err != nil {
+				ss.Close()
+				return
+			}
+		}
+	}()
+
 	go func() {
 		select {
 		case <-dieCh:
+			errCh <- nil
 		case <-time.Tick(time.Second):
-			t.Fatal("wait die chan timeout")
+			errCh <- fmt.Errorf("wait die chan timeout")
 		}
 	}()
 	cs.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSpeed(t *testing.T) {
