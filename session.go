@@ -386,6 +386,9 @@ func (s *Session) recvLoop() {
 			select {
 			case <-s.bucketNotify:
 			case <-s.die:
+				// If it returns here, Accept() and OpenStream() are unblocked with io.ErrClosedPipe,
+				// causing recvLoop to exit gracefully. If recvLoop is blocked in io.ReadFull, however,
+				// it will be unblocked by a socket read error instead.
 				return
 			}
 		}
