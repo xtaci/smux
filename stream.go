@@ -224,6 +224,7 @@ func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
 	}
 }
 
+// check comments in WriteTo
 func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 	for {
 		var pbuf *[]byte
@@ -376,6 +377,7 @@ func (s *stream) Write(b []byte) (n int, err error) {
 	}
 }
 
+// writeV1 writes data to the stream for version 1 streams.
 func (s *stream) writeV1(b []byte) (n int, err error) {
 	// check empty input
 	if len(b) == 0 {
