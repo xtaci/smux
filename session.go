@@ -87,6 +87,7 @@ type Session struct {
 	conn io.ReadWriteCloser
 
 	config           *Config
+	goAway           int32  // flag id exhausted
 	nextStreamID     uint32 // next stream identifier
 	nextStreamIDLock sync.Mutex
 
@@ -114,11 +115,8 @@ type Session struct {
 
 	chAccepts chan *stream
 
-	sessionIsActive int32 // flag session is active
-
-	goAway int32 // flag id exhausted
-
-	deadline atomic.Value
+	sessionIsActive int32        // flag session is active
+	acceptDeadline  atomic.Value // deadline for Accept()
 
 	requestID        uint32            // Monotonic increasing write request ID
 	shaper           chan writeRequest // a shaper for writing
@@ -221,7 +219,7 @@ func (s *Session) Open() (io.ReadWriteCloser, error) {
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
 	var deadline <-chan time.Time
-	if d, ok := s.deadline.Load().(time.Time); ok && !d.IsZero() {
+	if d, ok := s.acceptDeadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(time.Until(d))
 		defer timer.Stop()
 		deadline = timer.C
@@ -328,7 +326,7 @@ func (s *Session) NumStreams() int {
 // SetDeadline sets a deadline used by Accept* calls.
 // A zero time value disables the deadline.
 func (s *Session) SetDeadline(t time.Time) error {
-	s.deadline.Store(t)
+	s.acceptDeadline.Store(t)
 	return nil
 }
 
