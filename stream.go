@@ -444,13 +444,28 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 	sent := 0
 	frame := newFrame(byte(s.sess.config.Version), cmdPSH, s.id)
 
+	var deadlineTimer *time.Timer
+	defer func() {
+		stopTimer(deadlineTimer)
+	}()
+
 	for {
-		// update write deadline timer
-		var deadline <-chan time.Time
+		deadline := (<-chan time.Time)(nil)
 		if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-			timer := time.NewTimer(time.Until(d))
-			defer timer.Stop()
-			deadline = timer.C
+			dur := time.Until(d)
+			if dur < 0 {
+				dur = 0
+			}
+			if deadlineTimer == nil {
+				deadlineTimer = time.NewTimer(dur)
+			} else {
+				stopTimer(deadlineTimer)
+				deadlineTimer.Reset(dur)
+			}
+			deadline = deadlineTimer.C
+		} else if deadlineTimer != nil {
+			stopTimer(deadlineTimer)
+			deadlineTimer = nil
 		}
 
 		// per stream sliding window control
@@ -665,4 +680,17 @@ func (s *stream) fin() {
 	s.finEventOnce.Do(func() {
 		close(s.chFinEvent)
 	})
+}
+
+// stopTimer stops the supplied timer and drains its channel if needed.
+func stopTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
 }
