@@ -24,6 +24,7 @@ package smux
 
 import (
 	"bytes"
+	"math"
 	"testing"
 )
 
@@ -86,6 +87,15 @@ func TestConfig(t *testing.T) {
 	}
 
 	config = DefaultConfig()
+	config.MaxReceiveBuffer = math.MaxInt32 + 1
+	err = VerifyConfig(config)
+	t.Log(err)
+	if err == nil {
+		t.Fatal("expected an error")
+		return
+	}
+
+	config = DefaultConfig()
 	config.MaxStreamBuffer = 0
 	err = VerifyConfig(config)
 	t.Log(err)
@@ -113,5 +123,21 @@ func TestConfig(t *testing.T) {
 	if _, err := Client(&bts, config); err == nil {
 		t.Fatal("client started with wrong config")
 		return
+	}
+}
+
+func TestConfigMaxReceiveBufferUpperBound(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxReceiveBuffer = math.MaxInt32 + 1
+	if err := VerifyConfig(config); err == nil {
+		t.Fatal("expected verify failure for excessive MaxReceiveBuffer")
+	}
+
+	var bts buffer
+	if _, err := Server(&bts, config); err == nil {
+		t.Fatal("server should reject excessive MaxReceiveBuffer")
+	}
+	if _, err := Client(&bts, config); err == nil {
+		t.Fatal("client should reject excessive MaxReceiveBuffer")
 	}
 }
