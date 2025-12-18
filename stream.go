@@ -412,7 +412,7 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 
 		frame.data = b[:size]
 		n, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
-		s.numWritten++
+		atomic.AddUint32(&s.numWritten, uint32(size))
 		sent += n
 		if err != nil {
 			return sent, err
