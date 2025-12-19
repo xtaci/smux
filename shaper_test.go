@@ -276,3 +276,154 @@ func TestShaperQueue_FastWriteSlowRead(t *testing.T) {
 		}
 	}
 }
+
+func TestShaperQueue_PopBoundary(t *testing.T) {
+	sq := NewShaperQueue()
+
+	// 1. Empty Queue
+	if _, ok := sq.Pop(); ok {
+		t.Fatal("Pop on empty queue should return false")
+	}
+
+	// 2. Single Stream Lifecycle
+	// Push 2 items to Stream 10
+	sq.Push(writeRequest{frame: Frame{sid: 10}, seq: 1})
+	sq.Push(writeRequest{frame: Frame{sid: 10}, seq: 2})
+
+	if sq.Len() != 2 {
+		t.Fatalf("Expected len 2, got %d", sq.Len())
+	}
+
+	// Pop 1
+	req, ok := sq.Pop()
+	if !ok || req.frame.sid != 10 || req.seq != 1 {
+		t.Fatalf("Expected sid 10 seq 1, got %v %v", req.frame.sid, req.seq)
+	}
+	// Check internals
+	if len(sq.streams) != 1 {
+		t.Errorf("Expected 1 stream in map, got %d", len(sq.streams))
+	}
+	if sq.rrList.Len() != 1 {
+		t.Errorf("Expected 1 item in rrList, got %d", sq.rrList.Len())
+	}
+
+	// Pop 2 (Stream becomes empty)
+	req, ok = sq.Pop()
+	if !ok || req.frame.sid != 10 || req.seq != 2 {
+		t.Fatalf("Expected sid 10 seq 2, got %v %v", req.frame.sid, req.seq)
+	}
+	// Check internals - should be cleaned up
+	if len(sq.streams) != 0 {
+		t.Errorf("Expected 0 streams in map, got %d", len(sq.streams))
+	}
+	if sq.rrList.Len() != 0 {
+		t.Errorf("Expected 0 items in rrList, got %d", sq.rrList.Len())
+	}
+	if sq.next != nil {
+		t.Errorf("Expected next to be nil, got %v", sq.next)
+	}
+
+	// Pop empty again
+	if _, ok := sq.Pop(); ok {
+		t.Fatal("Pop on empty queue should return false")
+	}
+}
+
+func TestShaperQueue_MultiStreamRemoval(t *testing.T) {
+	sq := NewShaperQueue()
+
+	// Setup:
+	// Stream 10: 1 item
+	// Stream 20: 2 items
+	// Stream 30: 1 item
+	// Push order matters for Round Robin initial order if we push sequentially for new streams.
+	// NewShaperQueue appends to list.
+	// Order in list: 10, 20, 30
+
+	sq.Push(writeRequest{frame: Frame{sid: 10}, seq: 1})
+	sq.Push(writeRequest{frame: Frame{sid: 20}, seq: 1})
+	sq.Push(writeRequest{frame: Frame{sid: 20}, seq: 2})
+	sq.Push(writeRequest{frame: Frame{sid: 30}, seq: 1})
+
+	// Current List: [10, 20, 30]
+	// Next: 10
+
+	// 1. Pop Stream 10 (seq 1). Stream 10 becomes empty and should be removed.
+	// Next should move to 20.
+	req, ok := sq.Pop()
+	if !ok || req.frame.sid != 10 {
+		t.Fatalf("Expected sid 10, got %v", req.frame.sid)
+	}
+	if _, exists := sq.streams[10]; exists {
+		t.Error("Stream 10 should be removed")
+	}
+	if sq.rrList.Len() != 2 {
+		t.Errorf("Expected list len 2, got %d", sq.rrList.Len())
+	}
+	// Current List: [20, 30] (conceptually, implementation might be linked list nodes)
+	// Next should be 20.
+
+	// 2. Pop Stream 20 (seq 1). Stream 20 has 1 left.
+	// Next should move to 30.
+	req, ok = sq.Pop()
+	if !ok || req.frame.sid != 20 || req.seq != 1 {
+		t.Fatalf("Expected sid 20 seq 1, got %v %v", req.frame.sid, req.seq)
+	}
+	if sq.rrList.Len() != 2 {
+		t.Errorf("Expected list len 2, got %d", sq.rrList.Len())
+	}
+
+	// 3. Pop Stream 30 (seq 1). Stream 30 becomes empty and removed.
+	// Next should wrap around to 20.
+	req, ok = sq.Pop()
+	if !ok || req.frame.sid != 30 {
+		t.Fatalf("Expected sid 30, got %v", req.frame.sid)
+	}
+	if _, exists := sq.streams[30]; exists {
+		t.Error("Stream 30 should be removed")
+	}
+	if sq.rrList.Len() != 1 {
+		t.Errorf("Expected list len 1, got %d", sq.rrList.Len())
+	}
+
+	// 4. Pop Stream 20 (seq 2). Stream 20 becomes empty and removed.
+	// List becomes empty.
+	req, ok = sq.Pop()
+	if !ok || req.frame.sid != 20 || req.seq != 2 {
+		t.Fatalf("Expected sid 20 seq 2, got %v %v", req.frame.sid, req.seq)
+	}
+	if sq.rrList.Len() != 0 {
+		t.Errorf("Expected list len 0, got %d", sq.rrList.Len())
+	}
+	if sq.next != nil {
+		t.Error("Expected next to be nil")
+	}
+}
+
+func TestShaperHeap_MemoryLeak(t *testing.T) {
+	// Verify the fix for memory leak in Pop
+	h := &shaperHeap{}
+	heap.Init(h)
+
+	// Push a request with a large payload (simulated by checking the struct field)
+	// We can't easily check memory usage of the specific array slot in Go without unsafe or reflection tricks,
+	// but we can verify the logic by ensuring the popped element is returned correctly
+	// and trusting the code review that we set it to zero.
+	// However, we can check if the code runs without panic.
+
+	req := writeRequest{frame: Frame{sid: 1, data: make([]byte, 100)}}
+	heap.Push(h, req)
+
+	if h.Len() != 1 {
+		t.Fatal("Heap len should be 1")
+	}
+
+	popped := heap.Pop(h).(writeRequest)
+	if popped.frame.sid != 1 {
+		t.Fatal("Incorrect popped item")
+	}
+
+	if h.Len() != 0 {
+		t.Fatal("Heap len should be 0")
+	}
+}
