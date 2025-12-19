@@ -126,12 +126,36 @@ func BenchmarkAlloc(b *testing.B) {
 }
 
 func TestDebrujin(t *testing.T) {
-	for i := 1; i < 65536; i++ {
+	for i := 1; i <= 65536; i++ {
 		a := int(msb(i))
 		b := bits.Len(uint(i))
 		if a+1 != b {
 			t.Fatal("debrujin")
 			return
 		}
+	}
+}
+
+func TestAllocPutSizeMismatch(t *testing.T) {
+	alloc := NewAllocator()
+	data := alloc.Get(1024)
+	if data == nil {
+		t.Fatal("Get(1024) failed")
+	}
+
+	// simulate a slice operation that reduces capacity
+	// e.g. data[1:]
+	// cap becomes 1023
+	sliced := (*data)[1:]
+	if err := alloc.Put(&sliced); err == nil {
+		t.Fatal("Put() should fail with mismatched capacity")
+	}
+
+	// simulate a slice operation that keeps capacity
+	// e.g. data[:512]
+	// cap remains 1024
+	sliced = (*data)[:512]
+	if err := alloc.Put(&sliced); err != nil {
+		t.Fatal("Put() should succeed with matched capacity")
 	}
 }
