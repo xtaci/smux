@@ -427,3 +427,16 @@ func TestShaperHeap_MemoryLeak(t *testing.T) {
 		t.Fatal("Heap len should be 0")
 	}
 }
+
+func TestShaperIsEmpty(t *testing.T) {
+	sq := NewShaperQueue()
+	if !sq.IsEmpty() {
+		t.Fatal("ShaperQueue should be empty")
+	}
+	sq.Push(writeRequest{
+frame: newFrame(1, cmdPSH, 1),
+})
+	if sq.IsEmpty() {
+		t.Fatal("ShaperQueue should not be empty")
+	}
+}

@@ -1266,3 +1266,209 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	}
 	wg.Wait()
 }
+
+func TestFrameString(t *testing.T) {
+	h := rawHeader{1, cmdSYN, 100, 0, 1, 0, 0, 0}
+	expected := "Version:1 Cmd:0 StreamID:1 Length:100"
+	if h.String() != expected {
+		t.Fatalf("expected %s, got %s", expected, h.String())
+	}
+}
+
+func TestSessionAddr(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer s.Close()
+	defer p2.Close()
+
+	if s.LocalAddr() == nil {
+		t.Fatal("LocalAddr should not be nil")
+	}
+	if s.RemoteAddr() == nil {
+		t.Fatal("RemoteAddr should not be nil")
+	}
+}
+
+func TestSessionSetDeadline(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer s.Close()
+	defer p2.Close()
+
+	if err := s.SetDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamID(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer s.Close()
+	defer p2.Close()
+
+	go func() {
+		c, _ := Client(p2, nil)
+		c.OpenStream()
+	}()
+
+	stream, err := s.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.ID() == 0 {
+		t.Fatal("Stream ID should not be 0")
+	}
+}
+
+func TestStreamSetDeadline(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer s.Close()
+	defer p2.Close()
+
+	go func() {
+		c, _ := Client(p2, nil)
+		c.OpenStream()
+	}()
+
+	stream, err := s.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.SetDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTimeoutError(t *testing.T) {
+	var err error = &timeoutError{}
+	if ne, ok := err.(net.Error); ok {
+		if !ne.Temporary() {
+			t.Fatal("timeoutError should be temporary")
+		}
+		if !ne.Timeout() {
+			t.Fatal("timeoutError should be a timeout")
+		}
+		if ne.Error() != "timeout" {
+			t.Fatal("timeoutError string should be 'timeout'")
+		}
+	} else {
+		t.Fatal("timeoutError should implement net.Error")
+	}
+}
+
+func TestSessionOpenAccept(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	c, _ := Client(p2, nil)
+	defer s.Close()
+	defer c.Close()
+	defer p1.Close()
+	defer p2.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := c.Open(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	if _, err := s.Accept(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}
+
+func TestStreamAddr(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer s.Close()
+	defer p2.Close()
+
+	go func() {
+		c, _ := Client(p2, nil)
+		c.OpenStream()
+	}()
+
+	stream, err := s.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.LocalAddr() == nil {
+		t.Fatal("LocalAddr should not be nil")
+	}
+	if stream.RemoteAddr() == nil {
+		t.Fatal("RemoteAddr should not be nil")
+	}
+}
+
+type hiddenConn struct {
+	conn net.Conn
+}
+
+func (c *hiddenConn) Read(b []byte) (n int, err error)  { return c.conn.Read(b) }
+func (c *hiddenConn) Write(b []byte) (n int, err error) { return c.conn.Write(b) }
+func (c *hiddenConn) Close() error                      { return c.conn.Close() }
+
+func TestSessionAddrNonNetConn(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+	hc := &hiddenConn{p1}
+	s, _ := Server(hc, nil)
+	defer s.Close()
+
+	if s.LocalAddr() != nil {
+		t.Fatal("LocalAddr should be nil")
+	}
+	if s.RemoteAddr() != nil {
+		t.Fatal("RemoteAddr should be nil")
+	}
+}
+
+func TestStreamAddrNonNetConn(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+	hc := &hiddenConn{p1}
+	s, _ := Server(hc, nil)
+	defer s.Close()
+
+	go func() {
+		c, _ := Client(p2, nil)
+		c.OpenStream()
+	}()
+
+	stream, err := s.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.LocalAddr() != nil {
+		t.Fatal("LocalAddr should be nil")
+	}
+	if stream.RemoteAddr() != nil {
+		t.Fatal("RemoteAddr should be nil")
+	}
+}
+
+func TestSessionCloseChan(t *testing.T) {
+	p1, p2 := net.Pipe()
+	s, _ := Server(p1, nil)
+	defer p1.Close()
+	defer p2.Close()
+
+	ch := s.CloseChan()
+	select {
+	case <-ch:
+		t.Fatal("CloseChan should not be closed yet")
+	default:
+	}
+
+	s.Close()
+	select {
+	case <-ch:
+	default:
+		t.Fatal("CloseChan should be closed")
+	}
+}
