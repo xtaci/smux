@@ -149,7 +149,3 @@ func server() {
 * `MaxFrameSize`: 帧的最大大小。
 * `MaxReceiveBuffer`: 共享接收缓冲区的最大大小。
 * `MaxStreamBuffer`: 每个流缓冲区的最大大小。
-
-## 状态
-
-稳定 (Stable)
