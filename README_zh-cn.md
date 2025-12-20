@@ -30,7 +30,7 @@ Smux (**S**imple **MU**ltiple**X**ing) 是一个 Golang 的多路复用库。它
 3. 最小化头部（8 字节），最大化有效载荷。
 4. 在 [kcptun](https://github.com/xtaci/kcptun) 中经过数百万设备的实战考验。
 5. 内置公平队列流量整形。
-6. 每流滑动窗口用于拥塞控制（协议版本 2+）。
+6. 流滑动窗口，用于每条流的拥塞控制（协议版本 2+）。
 
 ![smooth bandwidth curve](assets/curve.jpg)
 
