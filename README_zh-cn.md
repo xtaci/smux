@@ -19,26 +19,26 @@
 
 [English](README.md) | [中文](README_zh-cn.md)
 
-## Introduction
+## 简介
 
-Smux (**S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It relies on an underlying connection to provide reliability and ordering, such as TCP or [KCP](https://github.com/xtaci/kcp-go), and provides stream-oriented multiplexing. This library was originally designed to power connection management for [kcp-go](https://github.com/xtaci/kcp-go).
+Smux (**S**imple **MU**ltiple**X**ing) 是一个 Golang 的多路复用库。它依赖于底层的连接（如 TCP 或 [KCP](https://github.com/xtaci/kcp-go)）来提供可靠性和顺序保证，并提供面向流的多路复用功能。该库最初是为 [kcp-go](https://github.com/xtaci/kcp-go) 的连接管理而设计的。
 
-## Features
+## 特性
 
-1. ***Token bucket*** controlled receiving, providing a smoother bandwidth graph (see picture below).
-2. Session-wide receive buffer shared among streams for **fully controlled** overall memory usage.
-3. Minimized header (8 bytes), maximized payload.
-4. Battle-tested on millions of devices in [kcptun](https://github.com/xtaci/kcptun).
-5. Built-in fair queue traffic shaping.
-6. Per-stream sliding window for congestion control (protocol version 2+).
+1. ***令牌桶*** 控制接收，提供更平滑的带宽曲线（见下图）。
+2. 会话级（Session-wide）接收缓冲区在流之间共享，**完全控制**整体内存使用。
+3. 最小化头部（8 字节），最大化有效载荷。
+4. 在 [kcptun](https://github.com/xtaci/kcptun) 中经过数百万设备的实战考验。
+5. 内置公平队列流量整形。
+6. 每流滑动窗口用于拥塞控制（协议版本 2+）。
 
 ![smooth bandwidth curve](assets/curve.jpg)
 
-## Documentation
+## 文档
 
-For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
+有关完整文档，请参阅相关的 [Godoc](https://godoc.org/github.com/xtaci/smux)。
 
-## Benchmark
+## 基准测试 (Benchmark)
 ```
 $ go test -v -run=^$ -bench .
 goos: darwin
@@ -52,7 +52,7 @@ PASS
 ok  	github.com/xtaci/smux	7.811s
 ```
 
-## Specification
+## 规范 (Specification)
 
 ```
 VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)  
@@ -66,65 +66,65 @@ CMD:
     cmdFIN(1)
     cmdPSH(2)
     cmdNOP(3)
-    cmdUPD(4)	// only supported on version 2
+    cmdUPD(4)	// 仅在版本 2 中支持
     
 STREAMID:
-    client use odd numbers starts from 1
-    server use even numbers starts from 0
+    客户端使用从 1 开始的奇数
+    服务端使用从 0 开始的偶数
     
 cmdUPD:
     | CONSUMED(4B) | WINDOW(4B) |
 ```
 
-## Usage
+## 用法 (Usage)
 
 ```go
 
 func client() {
-    // Get a TCP connection
+    // 获取一个 TCP 连接
     conn, err := net.Dial(...)
     if err != nil {
         panic(err)
     }
 
-    // Setup client side of smux
+    // 设置 smux 的客户端
     session, err := smux.Client(conn, nil)
     if err != nil {
         panic(err)
     }
 
-    // Open a new stream
+    // 打开一个新的流
     stream, err := session.OpenStream()
     if err != nil {
         panic(err)
     }
 
-    // Stream implements io.ReadWriteCloser
+    // Stream 实现了 io.ReadWriteCloser 接口
     stream.Write([]byte("ping"))
     stream.Close()
     session.Close()
 }
 
 func server() {
-    // Accept a TCP connection
+    // 接受一个 TCP 连接
     conn, err := listener.Accept()
     if err != nil {
         panic(err)
     }
 
-    // Setup server side of smux
+    // 设置 smux 的服务端
     session, err := smux.Server(conn, nil)
     if err != nil {
         panic(err)
     }
 
-    // Accept a stream
+    // 接受一个流
     stream, err := session.AcceptStream()
     if err != nil {
         panic(err)
     }
 
-    // Listen for a message
+    // 监听消息
     buf := make([]byte, 4)
     stream.Read(buf)
     stream.Close()
@@ -133,6 +133,6 @@ func server() {
 
 ```
 
-## Status
+## 状态
 
-Stable
+稳定 (Stable)
