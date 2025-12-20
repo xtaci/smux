@@ -34,6 +34,12 @@ Smux (**S**imple **MU**ltiple**X**ing) 是一个 Golang 的多路复用库。它
 
 ![smooth bandwidth curve](assets/curve.jpg)
 
+## 架构
+
+* **Session**: 多路复用连接的主要管理器。它管理底层的 `io.ReadWriteCloser`，处理流的创建/接受，并管理共享的接收缓冲区。
+* **Stream**: 会话中的逻辑流。它实现了 `net.Conn` 接口，处理数据缓冲和流控制。
+* **Frame**: 数据传输的线上传输格式。
+
 ## 文档
 
 有关完整文档，请参阅相关的 [Godoc](https://godoc.org/github.com/xtaci/smux)。
@@ -132,6 +138,17 @@ func server() {
 }
 
 ```
+
+## 配置
+
+`smux.Config` 允许调整会话参数：
+
+* `Version`: 协议版本（1 或 2）。
+* `KeepAliveInterval`: 发送 NOP 帧以保持连接存活的间隔。
+* `KeepAliveTimeout`: 如果未接收到数据，关闭会话的超时时间。
+* `MaxFrameSize`: 帧的最大大小。
+* `MaxReceiveBuffer`: 共享接收缓冲区的最大大小。
+* `MaxStreamBuffer`: 每个流缓冲区的最大大小。
 
 ## 状态
 

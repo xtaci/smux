@@ -34,6 +34,12 @@ Smux (**S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It 
 
 ![smooth bandwidth curve](assets/curve.jpg)
 
+## Architecture
+
+* **Session**: The main manager for a multiplexed connection. It manages the underlying `io.ReadWriteCloser`, handles stream creation/acceptance, and manages the shared receive buffer.
+* **Stream**: A logical stream within a session. It implements the `net.Conn` interface, handling data buffering and flow control.
+* **Frame**: The wire format for data transmission.
+
 ## Documentation
 
 For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
@@ -132,6 +138,17 @@ func server() {
 }
 
 ```
+
+## Configuration
+
+`smux.Config` allows tuning the session parameters:
+
+* `Version`: Protocol version (1 or 2).
+* `KeepAliveInterval`: Interval for sending NOP frames to keep the connection alive.
+* `KeepAliveTimeout`: Timeout for closing the session if no data is received.
+* `MaxFrameSize`: Maximum size of a frame.
+* `MaxReceiveBuffer`: Maximum size of the shared receive buffer.
+* `MaxStreamBuffer`: Maximum size of the per-stream buffer.
 
 ## Status
 
