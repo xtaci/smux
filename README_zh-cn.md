@@ -149,3 +149,9 @@ func server() {
 * `MaxFrameSize`: 帧的最大大小。
 * `MaxReceiveBuffer`: 共享接收缓冲区的最大大小。
 * `MaxStreamBuffer`: 每个流缓冲区的最大大小。
+
+## Reference
+
+* [hashicorp/yamux](https://github.com/hashicorp/yamux)
+* [xtaci/kcp-go](https://github.com/xtaci/kcp-go)
+* [xtaci/kcptun](https://github.com/xtaci/kcptun)

@@ -149,3 +149,9 @@ func server() {
 * `MaxFrameSize`: Maximum size of a frame.
 * `MaxReceiveBuffer`: Maximum size of the shared receive buffer.
 * `MaxStreamBuffer`: Maximum size of the per-stream buffer.
+
+## Reference
+
+* [hashicorp/yamux](https://github.com/hashicorp/yamux)
+* [xtaci/kcp-go](https://github.com/xtaci/kcp-go)
+* [xtaci/kcptun](https://github.com/xtaci/kcptun)
