@@ -40,6 +40,16 @@ Smux (**S**imple **MU**ltiple**X**ing) is a multiplexing library for Golang. It 
 * **Stream**: A logical stream within a session. It implements the `net.Conn` interface, handling data buffering and flow control.
 * **Frame**: The wire format for data transmission.
 
+## Frame Allocator
+
+`alloc.go` implements a slab-style allocator tuned for frames up to 64 KB. Seventeen `sync.Pool` buckets cache power-of-two slice capacities, and a De Bruijn based `msb()` lookup picks the smallest bucket that can satisfy a request in constant time. Because buffers are recycled with their zeroed memory, streams can write into them immediately without triggering extra allocations or heap scans.
+
+Benefits for the session:
+
+1. Bounded fragmentation (each request wastes < 50%) keeps the shared receive buffer predictable under load.
+2. Reuse of pre-sized slices drastically lowers GC pressure and amortizes zeroing costs across frames.
+3. Constant-time bucket selection avoids locks or searches, so high-throughput sessions keep tail latency steady even with thousands of flows.
+
 ## Documentation
 
 For complete documentation, see the associated [Godoc](https://godoc.org/github.com/xtaci/smux).
