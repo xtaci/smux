@@ -150,7 +150,7 @@ func server() {
 * `MaxReceiveBuffer`：会话级共享接收缓冲的上限。
 * `MaxStreamBuffer`：单个流本地缓冲的上限。
 
-## Reference
+## 参考
 
 * [hashicorp/yamux](https://github.com/hashicorp/yamux)
 * [xtaci/kcp-go](https://github.com/xtaci/kcp-go)
