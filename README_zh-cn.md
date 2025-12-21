@@ -2,7 +2,7 @@
 
 [![GoDoc][1]][2] [![MIT licensed][3]][4] [![Build Status][5]][6] [![Go Report Card][7]][8] [![Coverage Statusd][9]][10] [![Sourcegraph][11]][12]
 
-<img src="assets/mux.jpg" alt="smux" height="120px" /> 
+<img src="assets/mux.jpg" alt="smux" height="120px" />
 
 [1]: https://godoc.org/github.com/xtaci/smux?status.svg
 [2]: https://godoc.org/github.com/xtaci/smux
@@ -21,28 +21,28 @@
 
 ## 简介
 
-Smux (**S**imple **MU**ltiple**X**ing) 是一个 Golang 的多路复用库。它依赖于底层的连接（如 TCP 或 [KCP](https://github.com/xtaci/kcp-go)）来提供可靠性和顺序保证，并提供面向流的多路复用功能。该库最初是为 [kcp-go](https://github.com/xtaci/kcp-go) 的连接管理而设计的。
+Smux（**S**imple **MU**ltiple**X**ing）是一个用 Golang 实现的多路复用库，让多个有序、可靠的逻辑流共享同一条底层连接（如 TCP 或 [KCP](https://github.com/xtaci/kcp-go)）。它最初为 [kcp-go](https://github.com/xtaci/kcp-go) 设计，用于在复杂网络环境中维持长连接时的精细流量控制和资源管理。
 
 ## 特性
 
-1. ***令牌桶*** 控制接收，提供更平滑的带宽曲线（见下图）。
-2. 会话级（Session-wide）接收缓冲区在流之间共享，**完全控制**整体内存使用。
-3. 最小化头部（8 字节），最大化有效载荷。
-4. 在 [kcptun](https://github.com/xtaci/kcptun) 中经过数百万设备的实战考验。
-5. 内置公平队列流量整形。
-6. 流滑动窗口，用于每条流的拥塞控制（协议版本 2+）。
+1. **令牌桶限速**：基于令牌桶的接收控制，输出带宽曲线更平滑（如下图）。
+2. **全局缓冲共享**：会话级接收缓冲在各流之间复用，可精确限制整体内存占用。
+3. **极简协议头**：8 字节帧头最大化有效载荷占比。
+4. **大规模验证**：在 [kcptun](https://github.com/xtaci/kcptun) 中经数百万设备验证，稳定可靠。
+5. **公平队列整形**：内建公平调度，避免单个流独占带宽。
+6. **流级滑动窗口**：协议版本 2 起支持 per-stream 拥塞控制，进一步提升吞吐和延迟表现。
 
 ![smooth bandwidth curve](assets/curve.jpg)
 
 ## 架构
 
-* **Session**: 多路复用连接的主要管理器。它管理底层的 `io.ReadWriteCloser`，处理流的创建/接受，并管理共享的接收缓冲区。
-* **Stream**: 会话中的逻辑流。它实现了 `net.Conn` 接口，处理数据缓冲和流控制。
-* **Frame**: 数据传输的线上传输格式。
+* **Session**：多路复用会话管理器，负责维护底层 `io.ReadWriteCloser`，创建或接受 `Stream`，同时调度共享接收缓冲和限速逻辑。
+* **Stream**：会话中的逻辑连接，实现 `net.Conn` 接口，承担读写缓冲与流量控制。
+* **Frame**：在线协议帧格式，定义指令、流 ID、长度等字段，用于在 Session 与 Stream 之间传输数据/控制信息。
 
 ## 文档
 
-有关完整文档，请参阅相关的 [Godoc](https://godoc.org/github.com/xtaci/smux)。
+更完整的 API 与实现细节可参考 [Godoc](https://godoc.org/github.com/xtaci/smux)。
 
 ## 基准测试 (Benchmark)
 ```
@@ -50,34 +50,34 @@ $ go test -v -run=^$ -bench .
 goos: darwin
 goarch: amd64
 pkg: github.com/xtaci/smux
-BenchmarkMSB-4           	30000000	        51.8 ns/op
-BenchmarkAcceptClose-4   	   50000	     36783 ns/op
-BenchmarkConnSmux-4      	   30000	     58335 ns/op	2246.88 MB/s	    1208 B/op	      19 allocs/op
-BenchmarkConnTCP-4       	   50000	     25579 ns/op	5124.04 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMSB-4               30000000            51.8 ns/op
+BenchmarkAcceptClose-4          50000         36783 ns/op
+BenchmarkConnSmux-4             30000         58335 ns/op   2246.88 MB/s    1208 B/op     19 allocs/op
+BenchmarkConnTCP-4              50000         25579 ns/op   5124.04 MB/s       0 B/op      0 allocs/op
 PASS
-ok  	github.com/xtaci/smux	7.811s
+ok      github.com/xtaci/smux   7.811s
 ```
 
 ## 规范 (Specification)
 
 ```
-VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)  
+VERSION(1B) | CMD(1B) | LENGTH(2B) | STREAMID(4B) | DATA(LENGTH)
 
 VALUES FOR LATEST VERSION:
 VERSION:
     1/2
-    
+
 CMD:
     cmdSYN(0)
     cmdFIN(1)
     cmdPSH(2)
     cmdNOP(3)
-    cmdUPD(4)	// 仅在版本 2 中支持
-    
+    cmdUPD(4)    // 仅在版本 2 支持
+
 STREAMID:
     客户端使用从 1 开始的奇数
     服务端使用从 0 开始的偶数
-    
+
 cmdUPD:
     | CONSUMED(4B) | WINDOW(4B) |
 ```
@@ -87,50 +87,50 @@ cmdUPD:
 ```go
 
 func client() {
-    // 获取一个 TCP 连接
+    // 建立一条 TCP 连接
     conn, err := net.Dial(...)
     if err != nil {
         panic(err)
     }
 
-    // 设置 smux 的客户端
+    // 初始化 smux 客户端，会采用默认配置
     session, err := smux.Client(conn, nil)
     if err != nil {
         panic(err)
     }
 
-    // 打开一个新的流
+    // 打开一个新的逻辑流
     stream, err := session.OpenStream()
     if err != nil {
         panic(err)
     }
 
-    // Stream 实现了 io.ReadWriteCloser 接口
+    // Stream 满足 io.ReadWriteCloser，可直接读写
     stream.Write([]byte("ping"))
     stream.Close()
     session.Close()
 }
 
 func server() {
-    // 接受一个 TCP 连接
+    // 接收传入的 TCP 连接
     conn, err := listener.Accept()
     if err != nil {
         panic(err)
     }
 
-    // 设置 smux 的服务端
+    // 使用 smux.Server 将连接升级为服务端会话
     session, err := smux.Server(conn, nil)
     if err != nil {
         panic(err)
     }
 
-    // 接受一个流
+    // 阻塞等待客户端打开的流
     stream, err := session.AcceptStream()
     if err != nil {
         panic(err)
     }
 
-    // 监听消息
+    // 简单读取一条 4 字节消息
     buf := make([]byte, 4)
     stream.Read(buf)
     stream.Close()
@@ -141,14 +141,14 @@ func server() {
 
 ## 配置
 
-`smux.Config` 允许调整会话参数：
+`smux.Config` 提供了常用调优项：
 
-* `Version`: 协议版本（1 或 2）。
-* `KeepAliveInterval`: 发送 NOP 帧以保持连接存活的间隔。
-* `KeepAliveTimeout`: 如果未接收到数据，关闭会话的超时时间。
-* `MaxFrameSize`: 帧的最大大小。
-* `MaxReceiveBuffer`: 共享接收缓冲区的最大大小。
-* `MaxStreamBuffer`: 每个流缓冲区的最大大小。
+* `Version`：协议版本（1 或 2）。
+* `KeepAliveInterval`：发送 `cmdNOP` 以维持心跳的间隔。
+* `KeepAliveTimeout`：在无数据时认为连接失效的超时时间。
+* `MaxFrameSize`：单帧数据的最大长度。
+* `MaxReceiveBuffer`：会话级共享接收缓冲的上限。
+* `MaxStreamBuffer`：单个流本地缓冲的上限。
 
 ## Reference
 
