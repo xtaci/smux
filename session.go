@@ -159,6 +159,18 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
+	return s.openStreamInternal(0)
+}
+
+// OpenStreamWithBaseID is used to create a new stream with a specific base ID.
+// The stream ID will be generated based on the base ID.
+// On the receiving side, the base ID can be retrieved using stream.BaseID().
+func (s *Session) OpenStreamWithBaseID(baseID uint32) (*Stream, error) {
+	return s.openStreamInternal(baseID)
+}
+
+// openStreamInternal is the internal method for creating streams with optional base ID.
+func (s *Session) openStreamInternal(baseID uint32) (*Stream, error) {
 	if s.IsClosed() {
 		return nil, io.ErrClosedPipe
 	}
@@ -182,9 +194,22 @@ func (s *Session) OpenStream() (*Stream, error) {
 	sid := s.nextStreamID
 	s.nextStreamIDLock.Unlock()
 
-	stream := newStream(sid, s.config.MaxFrameSize, s)
+	var stream *stream
+	if baseID == 0 {
+		stream = newStream(sid, s.config.MaxFrameSize, s)
+	} else {
+		stream = newStreamWithBaseID(sid, baseID, s.config.MaxFrameSize, s)
+	}
 
-	if _, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
+	// Create SYN frame
+	synFrame := newFrame(byte(s.config.Version), cmdSYN, sid)
+	if baseID != 0 {
+		// Include baseID in the payload when it's non-zero
+		synFrame.data = make([]byte, 4)
+		binary.LittleEndian.PutUint32(synFrame.data, baseID)
+	}
+
+	if _, err := s.writeControlFrame(synFrame); err != nil {
 		return nil, err
 	}
 
@@ -419,9 +444,33 @@ func (s *Session) recvLoop() {
 			var accepted *stream
 			s.streamLock.Lock()
 			if _, ok := s.streams[sid]; !ok {
-				stream := newStream(sid, s.config.MaxFrameSize, s)
-				s.streams[sid] = stream
-				accepted = stream
+				var baseID uint32 = 0
+
+				// If there's payload, read baseID (4 bytes)
+				if hdr.Length() > 0 {
+					synPayloadBuf := make([]byte, hdr.Length())
+					_, err := io.ReadFull(s.conn, synPayloadBuf)
+					if err != nil {
+						s.streamLock.Unlock()
+						s.notifyReadError(err)
+						return
+					}
+
+					// Extract baseID from the first 4 bytes if available
+					if len(synPayloadBuf) >= 4 {
+						baseID = binary.LittleEndian.Uint32(synPayloadBuf[:4])
+					}
+				}
+
+				if baseID == 0 {
+					stream := newStream(sid, s.config.MaxFrameSize, s)
+					s.streams[sid] = stream
+					accepted = stream
+				} else {
+					stream := newStreamWithBaseID(sid, baseID, s.config.MaxFrameSize, s)
+					s.streams[sid] = stream
+					accepted = stream
+				}
 			}
 			s.streamLock.Unlock()
 

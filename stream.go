@@ -38,8 +38,9 @@ type Stream struct {
 
 // Stream implements net.Conn
 type stream struct {
-	id   uint32 // Stream identifier
-	sess *Session
+	id     uint32 // Stream identifier
+	baseID uint32 // Base ID used to generate the stream ID
+	sess   *Session
 
 	buffers [][]byte  // slice of buffers holding ordered incoming data
 	heads   []*[]byte // slice heads of the buffers above, kept for recycle
@@ -76,8 +77,14 @@ type stream struct {
 
 // newStream initializes and returns a new Stream.
 func newStream(id uint32, frameSize int, sess *Session) *stream {
+	return newStreamWithBaseID(id, 0, frameSize, sess)
+}
+
+// newStreamWithBaseID initializes and returns a new Stream with a base ID.
+func newStreamWithBaseID(id uint32, baseID uint32, frameSize int, sess *Session) *stream {
 	s := new(stream)
 	s.id = id
+	s.baseID = baseID
 	s.chReaderWakeup = make(chan struct{}, 1)
 	s.chWriterWakeup = make(chan struct{}, 1)
 	s.chUpdate = make(chan struct{}, 1)
@@ -93,6 +100,11 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 // ID returns the stream's unique identifier.
 func (s *stream) ID() uint32 {
 	return s.id
+}
+
+// BaseID returns the base ID used to generate the stream identifier.
+func (s *stream) BaseID() uint32 {
+	return s.baseID
 }
 
 // Read reads data from the stream into the provided buffer.
