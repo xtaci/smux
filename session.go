@@ -440,11 +440,15 @@ func (s *Session) recvLoop() {
 			}
 
 		case cmdFIN: // stream closing
+			var st *stream
 			s.streamLock.Lock()
 			if stream, ok := s.streams[sid]; ok {
-				stream.fin() // fin unblocks the readers and writers
+				st = stream
 			}
 			s.streamLock.Unlock()
+			if st != nil {
+				st.fin() // fin unblocks the readers and writers
+			}
 
 		case cmdPSH: // data frame
 			if hdr.Length() == 0 {

@@ -312,6 +312,41 @@ func TestHalfCloseWithFullClose(t *testing.T) {
 	}
 }
 
+func TestHalfCloseAutoCleanup(t *testing.T) {
+	_, stop, cli, serverSessionCh, err := setupHalfCloseServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	clientSession, _ := Client(cli, nil)
+	defer clientSession.Close()
+
+	serverSession := <-serverSessionCh
+	defer serverSession.Close()
+
+	clientStream, _ := clientSession.OpenStream()
+	serverStream, _ := serverSession.AcceptStream()
+
+	if err := clientStream.CloseWrite(); err != nil {
+		t.Fatal("client CloseWrite failed:", err)
+	}
+	if err := serverStream.CloseWrite(); err != nil {
+		t.Fatal("server CloseWrite failed:", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if clientSession.NumStreams() == 0 && serverSession.NumStreams() == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("streams not cleaned up: client=%d server=%d", clientSession.NumStreams(), serverSession.NumStreams())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestHalfCloseV2 tests half-close with protocol version 2
 func TestHalfCloseV2(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
