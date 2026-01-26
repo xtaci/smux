@@ -54,9 +54,13 @@ type stream struct {
 	die     chan struct{}
 	dieOnce sync.Once // Ensures die channel is closed only once
 
-	// to handle FIN event(i.e. EOF)
+	// to handle FIN event(i.e. EOF from remote)
 	chFinEvent   chan struct{}
 	finEventOnce sync.Once // Ensures chFinEvent is closed only once
+
+	// half-close support: local write closed (sent FIN)
+	chWriteClosed   chan struct{}
+	writeClosedOnce sync.Once // Ensures chWriteClosed is closed only once
 
 	// read/write deadline
 	readDeadline  atomic.Value
@@ -150,7 +154,8 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.peerWindow = initialPeerWindow // set to initial window size
+	s.chWriteClosed = make(chan struct{}) // half-close support
+	s.peerWindow = initialPeerWindow      // set to initial window size
 	// pre-allocate ring buffer to reduce allocations during data transfer
 	s.bufferRing = newBufferRing(8)
 
@@ -457,11 +462,11 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	// check if stream has closed
+	// check if stream write side has closed
 	select {
-	case <-s.chFinEvent: // passive closing
-		return 0, io.EOF
-	case <-s.die:
+	case <-s.chWriteClosed: // local write closed (half-close)
+		return 0, io.ErrClosedPipe
+	case <-s.die: // full close
 		return 0, io.ErrClosedPipe
 	default:
 	}
@@ -504,11 +509,11 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	// check if stream has closed
+	// check if stream write side has closed
 	select {
-	case <-s.chFinEvent:
-		return 0, io.EOF
-	case <-s.die:
+	case <-s.chWriteClosed: // local write closed (half-close)
+		return 0, io.ErrClosedPipe
+	case <-s.die: // full close
 		return 0, io.ErrClosedPipe
 	default:
 	}
@@ -599,8 +604,8 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		// This blocking behavior propagates flow control back to the upper layer (backpressure).
 		select {
 		case <-s.chWriterWakeup: // wakeup
-		case <-s.chFinEvent:
-			return 0, io.EOF
+		case <-s.chWriteClosed: // local write closed (half-close)
+			return sent, io.ErrClosedPipe
 		case <-s.die:
 			return sent, io.ErrClosedPipe
 		case <-deadline:
@@ -613,7 +618,34 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 	}
 }
 
+// CloseWrite implements half-close by closing the write side of the stream.
+// After CloseWrite, the stream can still receive data from the peer,
+// but any further writes will return io.ErrClosedPipe.
+// This is similar to net.TCPConn.CloseWrite().
+func (s *stream) CloseWrite() error {
+	var once bool
+	s.writeClosedOnce.Do(func() {
+		close(s.chWriteClosed)
+		once = true
+	})
+
+	if !once {
+		return io.ErrClosedPipe
+	}
+
+	// send FIN to notify the peer that we are done writing
+	f := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
+
+	timer := time.NewTimer(openCloseTimeout)
+	defer timer.Stop()
+
+	_, err := s.sess.writeFrameInternal(f, timer.C, CLSDATA)
+	s.tryHalfCloseCleanup()
+	return err
+}
+
 // Close implements net.Conn
+// Close fully closes the stream (both read and write sides).
 func (s *stream) Close() error {
 	var once bool
 	s.dieOnce.Do(func() {
@@ -624,6 +656,11 @@ func (s *stream) Close() error {
 	if !once {
 		return io.ErrClosedPipe
 	}
+
+	// also close the write side if not already closed
+	s.writeClosedOnce.Do(func() {
+		close(s.chWriteClosed)
+	})
 
 	// send FIN in order
 	f := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
@@ -749,6 +786,27 @@ func (s *stream) fin() {
 	s.finEventOnce.Do(func() {
 		close(s.chFinEvent)
 	})
+	s.tryHalfCloseCleanup()
+}
+
+// tryHalfCloseCleanup removes stream after both sides have sent FIN.
+func (s *stream) tryHalfCloseCleanup() {
+	select {
+	case <-s.chFinEvent:
+	default:
+		return
+	}
+
+	select {
+	case <-s.chWriteClosed:
+	default:
+		return
+	}
+
+	s.dieOnce.Do(func() {
+		close(s.die)
+	})
+	s.sess.streamClosed(s.id)
 }
 
 // stopTimer stops the supplied timer and drains its channel if needed.
