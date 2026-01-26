@@ -41,8 +41,7 @@ type stream struct {
 	id   uint32 // Stream identifier
 	sess *Session
 
-	buffers [][]byte  // slice of buffers holding ordered incoming data
-	heads   []*[]byte // slice heads of the buffers above, kept for recycle
+	bufferRing bufferRing // ring buffer for ordered incoming data
 
 	bufferLock sync.Mutex // Mutex to protect access to buffers
 	frameSize  int        // Maximum frame size for the stream
@@ -74,6 +73,72 @@ type stream struct {
 	chUpdate     chan struct{} // notify of remote data consuming and window update
 }
 
+type bufferRing struct {
+	bufs  [][]byte
+	heads []*[]byte
+	head  int
+	tail  int
+	size  int
+}
+
+func newBufferRing(capacity int) bufferRing {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return bufferRing{
+		bufs:  make([][]byte, capacity),
+		heads: make([]*[]byte, capacity),
+	}
+}
+
+func (r *bufferRing) len() int {
+	return r.size
+}
+
+func (r *bufferRing) grow() {
+	newCap := len(r.bufs) * 2
+	if newCap < 1 {
+		newCap = 1
+	}
+	newBufs := make([][]byte, newCap)
+	newHeads := make([]*[]byte, newCap)
+	for i := 0; i < r.size; i++ {
+		idx := (r.head + i) % len(r.bufs)
+		newBufs[i] = r.bufs[idx]
+		newHeads[i] = r.heads[idx]
+	}
+	r.bufs = newBufs
+	r.heads = newHeads
+	r.head = 0
+	r.tail = r.size
+}
+
+func (r *bufferRing) push(buf []byte, head *[]byte) {
+	if r.size == len(r.bufs) {
+		r.grow()
+	}
+	r.bufs[r.tail] = buf
+	r.heads[r.tail] = head
+	r.tail = (r.tail + 1) % len(r.bufs)
+	r.size++
+}
+
+func (r *bufferRing) pop() (buf []byte, head *[]byte, ok bool) {
+	if r.size == 0 {
+		return nil, nil, false
+	}
+	buf = r.bufs[r.head]
+	head = r.heads[r.head]
+	r.bufs[r.head] = nil
+	r.heads[r.head] = nil
+	r.head = (r.head + 1) % len(r.bufs)
+	r.size--
+	if r.size == 0 {
+		r.tail = r.head
+	}
+	return buf, head, true
+}
+
 // newStream initializes and returns a new Stream.
 func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s := new(stream)
@@ -86,9 +151,8 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
 	s.peerWindow = initialPeerWindow // set to initial window size
-	// pre-allocate buffer slices to reduce allocations during data transfer
-	s.buffers = make([][]byte, 0, 8)
-	s.heads = make([]*[]byte, 0, 8)
+	// pre-allocate ring buffer to reduce allocations during data transfer
+	s.bufferRing = newBufferRing(8)
 
 	return s
 }
@@ -125,16 +189,20 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 
 	// A critical section to copy data from buffers to b
 	s.bufferLock.Lock()
-	if len(s.buffers) > 0 {
-		n = copy(b, s.buffers[0])
-		s.buffers[0] = s.buffers[0][n:]
+	if s.bufferRing.len() > 0 {
+		n = copy(b, s.bufferRing.bufs[s.bufferRing.head])
+		s.bufferRing.bufs[s.bufferRing.head] = s.bufferRing.bufs[s.bufferRing.head][n:]
 
 		// recycle buffer when fully consumed
-		if len(s.buffers[0]) == 0 {
-			s.buffers[0] = nil
-			s.buffers = s.buffers[1:]
-			defaultAllocator.Put(s.heads[0])
-			s.heads = s.heads[1:]
+		if len(s.bufferRing.bufs[s.bufferRing.head]) == 0 {
+			defaultAllocator.Put(s.bufferRing.heads[s.bufferRing.head])
+			s.bufferRing.bufs[s.bufferRing.head] = nil
+			s.bufferRing.heads[s.bufferRing.head] = nil
+			s.bufferRing.head = (s.bufferRing.head + 1) % len(s.bufferRing.bufs)
+			s.bufferRing.size--
+			if s.bufferRing.size == 0 {
+				s.bufferRing.tail = s.bufferRing.head
+			}
 		}
 	}
 	s.bufferLock.Unlock()
@@ -163,16 +231,20 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 
 	var notifyConsumed uint32
 	s.bufferLock.Lock()
-	if len(s.buffers) > 0 {
-		n = copy(b, s.buffers[0])
-		s.buffers[0] = s.buffers[0][n:]
+	if s.bufferRing.len() > 0 {
+		n = copy(b, s.bufferRing.bufs[s.bufferRing.head])
+		s.bufferRing.bufs[s.bufferRing.head] = s.bufferRing.bufs[s.bufferRing.head][n:]
 
 		// recycle buffer when fully consumed
-		if len(s.buffers[0]) == 0 {
-			s.buffers[0] = nil
-			s.buffers = s.buffers[1:]
-			defaultAllocator.Put(s.heads[0])
-			s.heads = s.heads[1:]
+		if len(s.bufferRing.bufs[s.bufferRing.head]) == 0 {
+			defaultAllocator.Put(s.bufferRing.heads[s.bufferRing.head])
+			s.bufferRing.bufs[s.bufferRing.head] = nil
+			s.bufferRing.heads[s.bufferRing.head] = nil
+			s.bufferRing.head = (s.bufferRing.head + 1) % len(s.bufferRing.bufs)
+			s.bufferRing.size--
+			if s.bufferRing.size == 0 {
+				s.bufferRing.tail = s.bufferRing.head
+			}
 		}
 	}
 
@@ -235,11 +307,8 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 
 		// get the next buffer to write
 		s.bufferLock.Lock()
-		if len(s.buffers) > 0 {
-			buf = s.buffers[0]
-			head = s.heads[0]
-			s.buffers = s.buffers[1:]
-			s.heads = s.heads[1:]
+		if s.bufferRing.len() > 0 {
+			buf, head, _ = s.bufferRing.pop()
 		}
 		s.bufferLock.Unlock()
 
@@ -271,11 +340,8 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 
 		// get the next buffer to write
 		s.bufferLock.Lock()
-		if len(s.buffers) > 0 {
-			buf = s.buffers[0]
-			head = s.heads[0]
-			s.buffers = s.buffers[1:]
-			s.heads = s.heads[1:]
+		if s.bufferRing.len() > 0 {
+			buf, head, _ = s.bufferRing.pop()
 		}
 
 		// in v2, we need to track the number of bytes read
@@ -355,7 +421,7 @@ func (s *stream) waitRead() error {
 		// BUGFIX(xtaci): Fix for https://github.com/xtaci/smux/issues/82
 		s.bufferLock.Lock()
 		defer s.bufferLock.Unlock()
-		if len(s.buffers) > 0 {
+		if s.bufferRing.len() > 0 {
 			return nil
 		}
 		return io.EOF
@@ -634,22 +700,18 @@ func (s *stream) RemoteAddr() net.Addr {
 func (s *stream) pushBytes(pbuf *[]byte) {
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
-
-	s.buffers = append(s.buffers, *pbuf)
-	s.heads = append(s.heads, pbuf)
+	s.bufferRing.push(*pbuf, pbuf)
 }
 
 // recycleTokens transform remaining bytes to tokens(will truncate buffer)
 func (s *stream) recycleTokens() (n int) {
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
-
-	for k := range s.buffers {
-		n += len(s.buffers[k])
-		defaultAllocator.Put(s.heads[k])
+	for s.bufferRing.len() > 0 {
+		buf, head, _ := s.bufferRing.pop()
+		n += len(buf)
+		defaultAllocator.Put(head)
 	}
-	s.buffers = nil
-	s.heads = nil
 	return
 }
 
