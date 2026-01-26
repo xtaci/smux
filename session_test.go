@@ -1085,6 +1085,9 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 	seed := time.Now().UnixNano()
 	writerSrc := rand.NewSource(seed)
 	readerSrc := rand.NewSource(seed)
+	writerLenRand := rand.New(rand.NewSource(seed + 1))
+	readerLenRand := rand.New(rand.NewSource(seed + 2))
+	const maxChunk = 1 << 20
 
 	bytesSent := int64(0)
 	bytesReceived := int64(0)
@@ -1092,17 +1095,19 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 	// Writer goroutine
 	go func() {
 		r := rand.New(writerSrc)
+		sndbuf := make([]byte, maxChunk)
 		lastPrint := int64(0)
 		for bytesSent < N {
-			length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
+			length := writerLenRand.Intn(maxChunk) + 1 // Random length between 1 and 1MB
 			if bytesSent+int64(length) > N {
 				length = int(N - bytesSent)
 			}
-			sndbuf := make([]byte, length)
-			for i := range sndbuf {
-				sndbuf[i] = byte(r.Int())
+			buf := sndbuf[:length]
+			if _, err := r.Read(buf); err != nil {
+				t.Errorf("Rand read error: %v", err)
+				return
 			}
-			n, err := stream.Write(sndbuf)
+			n, err := stream.Write(buf)
 			if err != nil {
 				t.Errorf("Write error: %v", err)
 				return
@@ -1117,21 +1122,29 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 
 	// Reader goroutine
 	r := rand.New(readerSrc)
+	rcvbuf := make([]byte, maxChunk)
+	expbuf := make([]byte, maxChunk)
 	lastPrint := int64(0)
 	for bytesReceived < N {
-		length := rand.Intn(1<<20) + 1 // Random length between 1 and 1MB
+		length := readerLenRand.Intn(maxChunk) + 1 // Random length between 1 and 1MB
 		if bytesReceived+int64(length) > N {
 			length = int(N - bytesReceived)
 		}
-		rcvbuf := make([]byte, length)
-		n, err := stream.Read(rcvbuf)
+		buf := rcvbuf[:length]
+		n, err := stream.Read(buf)
 		if err != nil && err != io.EOF {
 			t.Fatalf("Read error: %v", err)
 		}
-		for i := 0; i < n; i++ {
-			expectedByte := byte(r.Int())
-			if rcvbuf[i] != expectedByte {
-				t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), rcvbuf[i], expectedByte)
+		if n > 0 {
+			if _, err := r.Read(expbuf[:n]); err != nil {
+				t.Fatalf("Rand read error: %v", err)
+			}
+			if !bytes.Equal(buf[:n], expbuf[:n]) {
+				for i := 0; i < n; i++ {
+					if buf[i] != expbuf[i] {
+						t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), buf[i], expbuf[i])
+					}
+				}
 			}
 		}
 		bytesReceived += int64(n)
@@ -1243,8 +1256,8 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	buf := make([]byte, 128*1024)
 	buf2 := make([]byte, 128*1024)
 	b.SetBytes(128 * 1024)
-	b.ResetTimer()
 	b.ReportAllocs()
+	b.ResetTimer()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -1261,8 +1274,6 @@ func bench(b *testing.B, rd io.Reader, wr io.Writer) {
 	}()
 	for i := 0; i < b.N; i++ {
 		wr.Write(buf)
-		// invalidate L3 Cache
-		buf = make([]byte, 128*1024)
 	}
 	wg.Wait()
 }
