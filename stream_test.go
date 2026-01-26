@@ -226,15 +226,23 @@ func TestHalfCloseBidirectional(t *testing.T) {
 	clientStream, _ := clientSession.OpenStream()
 	serverStream, _ := serverSession.AcceptStream()
 
+	// Use channels to coordinate the test
+	clientWriteDone := make(chan struct{})
+	serverWriteDone := make(chan struct{})
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Client writes, half-closes, then reads
+	// Client writes, waits for server write, then half-closes and reads
 	go func() {
 		defer wg.Done()
 		clientStream.Write([]byte("client data"))
-		clientStream.CloseWrite()
+		close(clientWriteDone)
 
+		// Wait for server to write before closing
+		<-serverWriteDone
+
+		// Read first, then close write
 		buf := make([]byte, 100)
 		n, err := clientStream.Read(buf)
 		if err != nil && err != io.EOF {
@@ -244,14 +252,20 @@ func TestHalfCloseBidirectional(t *testing.T) {
 		if string(buf[:n]) != "server data" {
 			t.Errorf("client got wrong data: %s", buf[:n])
 		}
+
+		clientStream.CloseWrite()
 	}()
 
-	// Server writes, half-closes, then reads
+	// Server writes, waits for client write, then half-closes and reads
 	go func() {
 		defer wg.Done()
 		serverStream.Write([]byte("server data"))
-		serverStream.CloseWrite()
+		close(serverWriteDone)
 
+		// Wait for client to write before closing
+		<-clientWriteDone
+
+		// Read first, then close write
 		buf := make([]byte, 100)
 		n, err := serverStream.Read(buf)
 		if err != nil && err != io.EOF {
@@ -261,6 +275,8 @@ func TestHalfCloseBidirectional(t *testing.T) {
 		if string(buf[:n]) != "client data" {
 			t.Errorf("server got wrong data: %s", buf[:n])
 		}
+
+		serverStream.CloseWrite()
 	}()
 
 	wg.Wait()
