@@ -106,6 +106,7 @@ type Session struct {
 
 	die     chan struct{} // flag session has died
 	dieOnce sync.Once
+	closed  int32 // atomic flag for fast IsClosed check
 
 	// socket error handling
 	socketReadError      atomic.Value
@@ -259,6 +260,7 @@ func (s *Session) Accept() (io.ReadWriteCloser, error) {
 func (s *Session) Close() error {
 	var once bool
 	s.dieOnce.Do(func() {
+		atomic.StoreInt32(&s.closed, 1)
 		close(s.die)
 		once = true
 	})
@@ -312,12 +314,7 @@ func (s *Session) notifyProtoError(err error) {
 
 // IsClosed does a safe check to see if we have shutdown
 func (s *Session) IsClosed() bool {
-	select {
-	case <-s.die:
-		return true
-	default:
-		return false
-	}
+	return atomic.LoadInt32(&s.closed) != 0
 }
 
 // NumStreams returns the number of currently open streams
@@ -440,11 +437,8 @@ func (s *Session) recvLoop() {
 			}
 
 		case cmdFIN: // stream closing
-			var st *stream
 			s.streamLock.Lock()
-			if stream, ok := s.streams[sid]; ok {
-				st = stream
-			}
+			st := s.streams[sid]
 			s.streamLock.Unlock()
 			if st != nil {
 				st.fin() // fin unblocks the readers and writers
@@ -493,10 +487,11 @@ func (s *Session) recvLoop() {
 
 			// update the window size for the corresponding stream
 			s.streamLock.Lock()
-			if stream, ok := s.streams[sid]; ok {
-				stream.update(updHdr.Consumed(), updHdr.Window())
-			}
+			st := s.streams[sid]
 			s.streamLock.Unlock()
+			if st != nil {
+				st.update(updHdr.Consumed(), updHdr.Window())
+			}
 
 		default:
 			s.notifyProtoError(ErrInvalidProtocol)
