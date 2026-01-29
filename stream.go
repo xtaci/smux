@@ -143,6 +143,29 @@ func (r *bufferRing) pop() (buf []byte, head *[]byte, ok bool) {
 	return buf, head, true
 }
 
+// consumeFront copies data from the front buffer to b, recycles the buffer if fully consumed,
+// and returns the number of bytes copied. Returns 0 if the ring is empty.
+func (r *bufferRing) consumeFront(b []byte) (n int, recycled *[]byte) {
+	if r.size == 0 {
+		return 0, nil
+	}
+	n = copy(b, r.bufs[r.head])
+	r.bufs[r.head] = r.bufs[r.head][n:]
+
+	// recycle buffer when fully consumed
+	if len(r.bufs[r.head]) == 0 {
+		recycled = r.heads[r.head]
+		r.bufs[r.head] = nil
+		r.heads[r.head] = nil
+		r.head = (r.head + 1) % len(r.bufs)
+		r.size--
+		if r.size == 0 {
+			r.tail = r.head
+		}
+	}
+	return n, recycled
+}
+
 // newStream initializes and returns a new Stream.
 func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s := new(stream)
@@ -193,24 +216,14 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 	}
 
 	// A critical section to copy data from buffers to b
+	var recycled *[]byte
 	s.bufferLock.Lock()
-	if s.bufferRing.len() > 0 {
-		n = copy(b, s.bufferRing.bufs[s.bufferRing.head])
-		s.bufferRing.bufs[s.bufferRing.head] = s.bufferRing.bufs[s.bufferRing.head][n:]
-
-		// recycle buffer when fully consumed
-		if len(s.bufferRing.bufs[s.bufferRing.head]) == 0 {
-			defaultAllocator.Put(s.bufferRing.heads[s.bufferRing.head])
-			s.bufferRing.bufs[s.bufferRing.head] = nil
-			s.bufferRing.heads[s.bufferRing.head] = nil
-			s.bufferRing.head = (s.bufferRing.head + 1) % len(s.bufferRing.bufs)
-			s.bufferRing.size--
-			if s.bufferRing.size == 0 {
-				s.bufferRing.tail = s.bufferRing.head
-			}
-		}
-	}
+	n, recycled = s.bufferRing.consumeFront(b)
 	s.bufferLock.Unlock()
+
+	if recycled != nil {
+		defaultAllocator.Put(recycled)
+	}
 
 	// return tokens to session to allow more data to be received
 	if n > 0 {
@@ -235,23 +248,9 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 	}
 
 	var notifyConsumed uint32
+	var recycled *[]byte
 	s.bufferLock.Lock()
-	if s.bufferRing.len() > 0 {
-		n = copy(b, s.bufferRing.bufs[s.bufferRing.head])
-		s.bufferRing.bufs[s.bufferRing.head] = s.bufferRing.bufs[s.bufferRing.head][n:]
-
-		// recycle buffer when fully consumed
-		if len(s.bufferRing.bufs[s.bufferRing.head]) == 0 {
-			defaultAllocator.Put(s.bufferRing.heads[s.bufferRing.head])
-			s.bufferRing.bufs[s.bufferRing.head] = nil
-			s.bufferRing.heads[s.bufferRing.head] = nil
-			s.bufferRing.head = (s.bufferRing.head + 1) % len(s.bufferRing.bufs)
-			s.bufferRing.size--
-			if s.bufferRing.size == 0 {
-				s.bufferRing.tail = s.bufferRing.head
-			}
-		}
-	}
+	n, recycled = s.bufferRing.consumeFront(b)
 
 	// In an ideal environment:
 	// If more than half of the buffer has been consumed, send a read ACK to the peer.
@@ -270,6 +269,10 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 		s.incr = 0 // reset incr counter
 	}
 	s.bufferLock.Unlock()
+
+	if recycled != nil {
+		defaultAllocator.Put(recycled)
+	}
 
 	if n > 0 {
 		s.sess.returnTokens(n)
@@ -442,6 +445,19 @@ func (s *stream) waitRead() error {
 
 }
 
+// checkWriteClosed checks if the stream write side has been closed.
+// Returns io.ErrClosedPipe if closed, nil otherwise.
+func (s *stream) checkWriteClosed() error {
+	select {
+	case <-s.chWriteClosed: // local write closed (half-close)
+		return io.ErrClosedPipe
+	case <-s.die: // full close
+		return io.ErrClosedPipe
+	default:
+		return nil
+	}
+}
+
 // Write implements net.Conn
 //
 // Note that the behavior when multiple goroutines write concurrently is not deterministic,
@@ -463,12 +479,8 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 	}
 
 	// check if stream write side has closed
-	select {
-	case <-s.chWriteClosed: // local write closed (half-close)
-		return 0, io.ErrClosedPipe
-	case <-s.die: // full close
-		return 0, io.ErrClosedPipe
-	default:
+	if err := s.checkWriteClosed(); err != nil {
+		return 0, err
 	}
 
 	// create write deadline timer
@@ -510,12 +522,8 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 	}
 
 	// check if stream write side has closed
-	select {
-	case <-s.chWriteClosed: // local write closed (half-close)
-		return 0, io.ErrClosedPipe
-	case <-s.die: // full close
-		return 0, io.ErrClosedPipe
-	default:
+	if err := s.checkWriteClosed(); err != nil {
+		return 0, err
 	}
 
 	// frame split and transmit process
