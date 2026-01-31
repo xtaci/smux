@@ -419,7 +419,15 @@ func (s *Session) recvLoop() {
 		sid := hdr.StreamID()
 		switch hdr.Cmd() {
 		case cmdNOP:
+			if hdr.Length() != 0 {
+				s.notifyProtoError(ErrInvalidProtocol)
+				return
+			}
 		case cmdSYN: // stream opening
+			if hdr.Length() != 0 {
+				s.notifyProtoError(ErrInvalidProtocol)
+				return
+			}
 			var accepted *stream
 			s.streamLock.Lock()
 			if _, ok := s.streams[sid]; !ok {
@@ -437,6 +445,10 @@ func (s *Session) recvLoop() {
 			}
 
 		case cmdFIN: // stream closing
+			if hdr.Length() != 0 {
+				s.notifyProtoError(ErrInvalidProtocol)
+				return
+			}
 			s.streamLock.Lock()
 			st := s.streams[sid]
 			s.streamLock.Unlock()
@@ -475,6 +487,10 @@ func (s *Session) recvLoop() {
 
 		case cmdUPD: // a window update signal (v2 only)
 			if s.config.Version != 2 {
+				s.notifyProtoError(ErrInvalidProtocol)
+				return
+			}
+			if hdr.Length() != szCmdUPD {
 				s.notifyProtoError(ErrInvalidProtocol)
 				return
 			}
