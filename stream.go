@@ -200,18 +200,23 @@ func (s *stream) ID() uint32 {
 
 // Read reads data from the stream into the provided buffer.
 func (s *stream) Read(b []byte) (n int, err error) {
-	for {
-		switch s.sess.config.Version {
-		case 2:
+	if s.sess.config.Version == 2 {
+		for {
 			n, err = s.tryReadV2(b)
-		default:
-			n, err = s.tryReadV1(b)
+			if err != ErrWouldBlock {
+				return n, err
+			}
+			if ew := s.waitRead(); ew != nil {
+				return 0, ew
+			}
 		}
+	}
 
+	for {
+		n, err = s.tryReadV1(b)
 		if err != ErrWouldBlock {
 			return n, err
 		}
-
 		if ew := s.waitRead(); ew != nil {
 			return 0, ew
 		}
