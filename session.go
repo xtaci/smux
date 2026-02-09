@@ -554,10 +554,16 @@ func (s *Session) shaperLoop() {
 			return
 		case r := <-chShaper:
 			s.sq.Push(r)
-			// notify sendLoop there are pending requests
-			if len(chShaper) == 0 || s.sq.Len() > minShaperNotifySize {
-				s.notifyShaperPending()
+			// batch drain: collect more requests if available
+			for len(chShaper) > 0 && s.sq.Len() < maxShaperSize {
+				select {
+				case r := <-chShaper:
+					s.sq.Push(r)
+				default:
+				}
 			}
+			// notify sendLoop there are pending requests
+			s.notifyShaperPending()
 
 			if s.sq.Len() >= maxShaperSize {
 				// stop accepting new requests temporarily if shaper queue is full

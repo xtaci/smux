@@ -83,15 +83,22 @@ type bufferRing struct {
 	head  int
 	tail  int
 	size  int
+	mask  int // bitmask for fast modulo when capacity is power of 2
 }
 
 func newBufferRing(capacity int) bufferRing {
 	if capacity < 1 {
 		capacity = 1
 	}
+	// ensure capacity is power of 2 for fast modulo using bitmask
+	cap := 1
+	for cap < capacity {
+		cap <<= 1
+	}
 	return bufferRing{
-		bufs:  make([][]byte, capacity),
-		heads: make([]*[]byte, capacity),
+		bufs:  make([][]byte, cap),
+		heads: make([]*[]byte, cap),
+		mask:  cap - 1,
 	}
 }
 
@@ -107,7 +114,7 @@ func (r *bufferRing) grow() {
 	newBufs := make([][]byte, newCap)
 	newHeads := make([]*[]byte, newCap)
 	for i := 0; i < r.size; i++ {
-		idx := (r.head + i) % len(r.bufs)
+		idx := (r.head + i) & r.mask
 		newBufs[i] = r.bufs[idx]
 		newHeads[i] = r.heads[idx]
 	}
@@ -115,6 +122,7 @@ func (r *bufferRing) grow() {
 	r.heads = newHeads
 	r.head = 0
 	r.tail = r.size
+	r.mask = newCap - 1
 }
 
 func (r *bufferRing) push(buf []byte, head *[]byte) {
@@ -123,7 +131,7 @@ func (r *bufferRing) push(buf []byte, head *[]byte) {
 	}
 	r.bufs[r.tail] = buf
 	r.heads[r.tail] = head
-	r.tail = (r.tail + 1) % len(r.bufs)
+	r.tail = (r.tail + 1) & r.mask
 	r.size++
 }
 
@@ -135,7 +143,7 @@ func (r *bufferRing) pop() (buf []byte, head *[]byte, ok bool) {
 	head = r.heads[r.head]
 	r.bufs[r.head] = nil
 	r.heads[r.head] = nil
-	r.head = (r.head + 1) % len(r.bufs)
+	r.head = (r.head + 1) & r.mask
 	r.size--
 	if r.size == 0 {
 		r.tail = r.head
@@ -157,7 +165,7 @@ func (r *bufferRing) consumeFront(b []byte) (n int, recycled *[]byte) {
 		recycled = r.heads[r.head]
 		r.bufs[r.head] = nil
 		r.heads[r.head] = nil
-		r.head = (r.head + 1) % len(r.bufs)
+		r.head = (r.head + 1) & r.mask
 		r.size--
 		if r.size == 0 {
 			r.tail = r.head
