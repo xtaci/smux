@@ -72,9 +72,10 @@ type stream struct {
 	incr       uint32 // bytes sent since last window update
 
 	// UPD command
-	peerConsumed uint32        // num of bytes the peer has consumed
-	peerWindow   uint32        // peer window, initialized to 256KB, updated by peer
-	chUpdate     chan struct{} // notify of remote data consuming and window update
+	peerConsumed          uint32        // num of bytes the peer has consumed
+	peerWindow            uint32        // peer window, initialized to 256KB, updated by peer
+	chUpdate              chan struct{} // notify of remote data consuming and window update
+	windowUpdateThreshold uint32        // cached threshold for window update (MaxStreamBuffer/2)
 }
 
 type bufferRing struct {
@@ -185,8 +186,9 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.chWriteClosed = make(chan struct{}) // half-close support
-	s.peerWindow = initialPeerWindow      // set to initial window size
+	s.chWriteClosed = make(chan struct{})                             // half-close support
+	s.peerWindow = initialPeerWindow                                  // set to initial window size
+	s.windowUpdateThreshold = uint32(sess.config.MaxStreamBuffer / 2) // cache threshold
 	// pre-allocate ring buffer to reduce allocations during data transfer
 	s.bufferRing = newBufferRing(8)
 
@@ -277,7 +279,7 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 
 	// send window update if the increased bytes exceed half of the buffer size
 	// or this is the initial read.
-	if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == uint32(n) {
+	if s.incr >= s.windowUpdateThreshold || s.numRead == uint32(n) {
 		notifyConsumed = s.numRead
 		s.incr = 0 // reset incr counter
 	}
@@ -374,7 +376,7 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 		s.incr += bufLen
 
 		// send window update if the increased bytes exceed half of the buffer size
-		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == bufLen {
+		if s.incr >= s.windowUpdateThreshold || s.numRead == bufLen {
 			notifyConsumed = s.numRead
 			s.incr = 0
 		}
