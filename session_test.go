@@ -145,19 +145,19 @@ func TestEcho(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 100
 	buf := make([]byte, 10)
-	var sent string
-	var received string
+	var sent strings.Builder
+	var received strings.Builder
 	for i := 0; i < N; i++ {
 		msg := fmt.Sprintf("hello%v", i)
 		stream.Write([]byte(msg))
-		sent += msg
+		sent.WriteString(msg)
 		if n, err := stream.Read(buf); err != nil {
 			t.Fatal(err)
 		} else {
-			received += string(buf[:n])
+			received.WriteString(string(buf[:n]))
 		}
 	}
-	if sent != received {
+	if sent.String() != received.String() {
 		t.Fatal("data mimatch")
 	}
 	session.Close()
@@ -531,11 +531,11 @@ func TestTinyReadBuffer(t *testing.T) {
 	stream, _ := session.OpenStream()
 	const N = 100
 	tinybuf := make([]byte, 6)
-	var sent string
-	var received string
+	var sent strings.Builder
+	var received strings.Builder
 	for i := 0; i < N; i++ {
 		msg := fmt.Sprintf("hello%v", i)
-		sent += msg
+		sent.WriteString(msg)
 		nsent, err := stream.Write([]byte(msg))
 		if err != nil {
 			t.Fatal("cannot write")
@@ -544,14 +544,14 @@ func TestTinyReadBuffer(t *testing.T) {
 		for nrecv < nsent {
 			if n, err := stream.Read(tinybuf); err == nil {
 				nrecv += n
-				received += string(tinybuf[:n])
+				received.WriteString(string(tinybuf[:n]))
 			} else {
 				t.Fatal("cannot read with tiny buffer")
 			}
 		}
 	}
 
-	if sent != received {
+	if sent.String() != received.String() {
 		t.Fatal("data mimatch")
 	}
 	session.Close()
