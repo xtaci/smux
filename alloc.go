@@ -29,7 +29,7 @@ import (
 
 var (
 	defaultAllocator *Allocator
-	debruijinPos     = [...]byte{0, 9, 1, 10, 13, 21, 2, 29, 11, 14, 16, 18, 22, 25, 3, 30, 8, 12, 20, 28, 15, 17, 24, 7, 19, 27, 23, 6, 26, 5, 4, 31}
+	debruijnPos      = [...]byte{0, 9, 1, 10, 13, 21, 2, 29, 11, 14, 16, 18, 22, 25, 3, 30, 8, 12, 20, 28, 15, 17, 24, 7, 19, 27, 23, 6, 26, 5, 4, 31}
 )
 
 func init() {
@@ -88,7 +88,7 @@ func (alloc *Allocator) Put(p *[]byte) error {
 	return nil
 }
 
-// msb return the pos of most significiant bit
+// msb returns the pos of most significant bit
 // http://supertech.csail.mit.edu/papers/debruijn.pdf
 func msb(size int) byte {
 	v := uint32(size)
@@ -97,5 +97,5 @@ func msb(size int) byte {
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
-	return debruijinPos[(v*0x07C4ACDD)>>27]
+	return debruijnPos[(v*0x07C4ACDD)>>27]
 }

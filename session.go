@@ -544,7 +544,7 @@ func (s *Session) keepalive() {
 
 // shaperLoop implements a priority queue and bandwidth shaping for write requests.
 // Eg: Control messages are prioritized over data messages, and shaper tries
-// it's best to keep fair bandwidth among streams.
+// its best to keep fair bandwidth among streams.
 func (s *Session) shaperLoop() {
 	chShaper := s.shaper
 

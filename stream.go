@@ -577,7 +577,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		// eg1: uint32(0) - uint32(math.MaxUint32) = 1
 		// eg2: int32(uint32(0) - uint32(1)) = -1
 		//
-		// basicially, you can take it as a MODULAR ARITHMETIC
+		// basically, you can take it as a MODULAR ARITHMETIC
 		inflight := int32(atomic.LoadUint32(&s.numWritten) - atomic.LoadUint32(&s.peerConsumed))
 		if inflight < 0 { // security check for malformed data
 			return 0, ErrConsumed
