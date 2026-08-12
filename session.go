@@ -27,7 +27,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,9 +235,11 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	select {
 	case stream := <-s.chAccepts:
 		wrapper := &Stream{stream: stream}
-		runtime.SetFinalizer(wrapper, func(s *Stream) {
-			s.Close()
-		})
+		// NOTE: no Close finalizer here (issue #116). io.Copy on an accepted
+		// stream dispatches to WriteTo promoted from the embedded *stream, so
+		// the outer *Stream wrapper becomes unreachable during the copy; a
+		// finalizer would then close the stream mid-transfer and silently drop
+		// data. OpenStream disabled the same finalizer for issue #997.
 		return wrapper, nil
 	case <-deadline:
 		return nil, ErrTimeout
