@@ -2,11 +2,52 @@ package smux
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type shortWriteWriter struct {
+	n   int
+	err error
+}
+
+func (w shortWriteWriter) Write(b []byte) (int, error) {
+	return w.n, w.err
+}
+
+func TestStreamWriteToShortWrite(t *testing.T) {
+	writeErr := errors.New("destination write failed")
+	for _, version := range []int{1, 2} {
+		for _, tc := range []shortWriteWriter{{n: 0}, {n: 3}, {n: 3, err: writeErr}} {
+			t.Run(fmt.Sprintf("v%d/n=%d/error=%v", version, tc.n, tc.err), func(t *testing.T) {
+				s := newUnitTestStream()
+				s.sess.config.Version = version
+				// Bound the wait if WriteTo incorrectly continues after the short write.
+				s.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				buf := defaultAllocator.Get(6)
+				copy(*buf, "abcdef")
+				s.pushBytes(buf)
+				s.fin()
+
+				n, gotErr := io.Copy(tc, s)
+				wantErr := tc.err
+				if wantErr == nil {
+					wantErr = io.ErrShortWrite
+				}
+				if gotErr != wantErr {
+					t.Fatalf("copy error = %v; want %v", gotErr, wantErr)
+				}
+				if n != int64(tc.n) {
+					t.Fatalf("copied %d bytes; want %d", n, tc.n)
+				}
+			})
+		}
+	}
+}
 
 func newUnitTestStream() *stream {
 	cfg := DefaultConfig()

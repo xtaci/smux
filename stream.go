@@ -348,6 +348,9 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 			if ew != nil {
 				return n, ew
 			}
+			if nw != len(buf) {
+				return n, io.ErrShortWrite
+			}
 		} else if ew := s.waitRead(); ew != nil {
 			return n, ew
 		}
@@ -394,6 +397,9 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 
 			if ew != nil {
 				return n, ew
+			}
+			if nw != len(buf) {
+				return n, io.ErrShortWrite
 			}
 
 			// send window update
