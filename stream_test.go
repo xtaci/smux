@@ -2,9 +2,11 @@ package smux
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -71,6 +73,37 @@ func TestBufferRingEmptyPop(t *testing.T) {
 	r := newBufferRing(2)
 	if buf, head, ok := r.pop(); ok || buf != nil || head != nil {
 		t.Fatalf("expected empty pop, got ok=%v buf=%v head=%v", ok, buf, head)
+	}
+}
+
+func TestBufferRingShrinksWhenDrained(t *testing.T) {
+	for _, mode := range []string{"pop", "consume"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newBufferRing(defaultBufferRingCapacity)
+			for i := 0; i < defaultBufferRingCapacity*2; i++ {
+				buf := []byte{byte(i)}
+				r.push(buf, nil)
+			}
+			if len(r.bufs) <= defaultBufferRingCapacity {
+				t.Fatal("expected ring to grow")
+			}
+
+			for r.len() > 0 {
+				switch mode {
+				case "pop":
+					if _, _, ok := r.pop(); !ok {
+						t.Fatal("unexpected empty ring")
+					}
+				case "consume":
+					if n, _ := r.consumeFront(make([]byte, 1)); n != 1 {
+						t.Fatalf("consumed %d bytes; want 1", n)
+					}
+				}
+			}
+			if got := len(r.bufs); got != defaultBufferRingCapacity {
+				t.Fatalf("ring capacity = %d; want %d", got, defaultBufferRingCapacity)
+			}
+		})
 	}
 }
 
@@ -363,6 +396,168 @@ func TestHalfCloseAutoCleanup(t *testing.T) {
 	}
 }
 
+func TestHalfClosePreservesUnreadData(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		for _, localFirst := range []bool{false, true} {
+			for _, useWriteTo := range []bool{false, true} {
+				for _, closeUnread := range []bool{false, true} {
+					t.Run(fmt.Sprintf("v%d/localFirst=%t/writeTo=%t/closeUnread=%t", version, localFirst, useWriteTo, closeUnread), func(t *testing.T) {
+						ln, err := net.Listen("tcp", "localhost:0")
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer ln.Close()
+
+						config := DefaultConfig()
+						config.Version = version
+						serverSessionCh := make(chan *Session, 1)
+						serverErrCh := make(chan error, 1)
+						go func() {
+							conn, err := ln.Accept()
+							if err != nil {
+								serverErrCh <- err
+								return
+							}
+							sess, err := Server(conn, config)
+							if err != nil {
+								serverErrCh <- err
+								return
+							}
+							serverSessionCh <- sess
+						}()
+
+						conn, err := net.Dial("tcp", ln.Addr().String())
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer conn.Close()
+
+						clientSession, err := Client(conn, config)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer clientSession.Close()
+
+						var serverSession *Session
+						select {
+						case serverSession = <-serverSessionCh:
+						case err := <-serverErrCh:
+							t.Fatal(err)
+						case <-time.After(5 * time.Second):
+							t.Fatal("timed out waiting for server session")
+						}
+						defer serverSession.Close()
+
+						clientStream, err := clientSession.OpenStream()
+						if err != nil {
+							t.Fatal(err)
+						}
+						serverStream, err := serverSession.AcceptStream()
+						if err != nil {
+							t.Fatal(err)
+						}
+
+						payload := []byte("buffered response survives half-close")
+						if localFirst {
+							if err := serverStream.CloseWrite(); err != nil {
+								t.Fatal("server CloseWrite failed:", err)
+							}
+						}
+						if _, err := clientStream.Write(payload); err != nil {
+							t.Fatal("client write failed:", err)
+						}
+						if err := clientStream.CloseWrite(); err != nil {
+							t.Fatal("client CloseWrite failed:", err)
+						}
+
+						if !localFirst {
+							select {
+							case <-serverStream.chFinEvent:
+							case <-time.After(5 * time.Second):
+								t.Fatal("timed out waiting for peer FIN")
+							}
+							if err := serverStream.CloseWrite(); err != nil {
+								t.Fatal("server CloseWrite failed:", err)
+							}
+						}
+
+						if closeUnread {
+							select {
+							case <-serverStream.chFinEvent:
+							case <-time.After(5 * time.Second):
+								t.Fatal("timed out waiting for peer FIN")
+							}
+							select {
+							case <-serverStream.die:
+							case <-time.After(5 * time.Second):
+								t.Fatal("timed out waiting for half-close cleanup")
+							}
+
+							serverStream.bufferLock.Lock()
+							buffered := serverStream.bufferRing.len()
+							serverStream.bufferLock.Unlock()
+							if buffered == 0 {
+								t.Fatal("expected unread data before explicit Close")
+							}
+
+							if err := serverStream.Close(); err != io.ErrClosedPipe {
+								t.Fatalf("Close after half-close = %v; want %v", err, io.ErrClosedPipe)
+							}
+
+							serverStream.bufferLock.Lock()
+							buffered = serverStream.bufferRing.len()
+							serverStream.bufferLock.Unlock()
+							if buffered != 0 {
+								t.Fatalf("Close left %d unread buffers", buffered)
+							}
+							if serverSession.NumStreams() != 0 {
+								t.Fatalf("Close left %d streams in server session", serverSession.NumStreams())
+							}
+							if got := atomic.LoadInt32(&serverSession.bucket); got != int32(config.MaxReceiveBuffer) {
+								t.Fatalf("Close left receive bucket at %d; want %d", got, config.MaxReceiveBuffer)
+							}
+							return
+						}
+
+						if err := serverStream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+							t.Fatal(err)
+						}
+						var got bytes.Buffer
+						if useWriteTo {
+							if _, err := io.Copy(&got, serverStream); err != nil {
+								t.Fatal("io.Copy failed:", err)
+							}
+						} else {
+							buf := make([]byte, 3)
+							for {
+								n, err := serverStream.Read(buf)
+								got.Write(buf[:n])
+								if err == io.EOF {
+									break
+								}
+								if err != nil {
+									t.Fatal("server read failed:", err)
+								}
+							}
+						}
+						if !bytes.Equal(got.Bytes(), payload) {
+							t.Fatalf("received %q; want %q", got.Bytes(), payload)
+						}
+
+						deadline := time.Now().Add(5 * time.Second)
+						for serverSession.NumStreams() != 0 || clientSession.NumStreams() != 0 {
+							if time.Now().After(deadline) {
+								t.Fatalf("streams not cleaned up: client=%d server=%d", clientSession.NumStreams(), serverSession.NumStreams())
+							}
+							time.Sleep(time.Millisecond)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 // TestHalfCloseV2 tests half-close with protocol version 2
 func TestHalfCloseV2(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
@@ -431,5 +626,79 @@ func TestHalfCloseV2(t *testing.T) {
 	}
 	if !bytes.Equal(responseBuf, responseData) {
 		t.Fatalf("response mismatch: got %v, want %v", responseBuf, responseData)
+	}
+}
+
+func TestWriteToV2WindowUpdateAfterDestinationError(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	config := DefaultConfig()
+	config.Version = 2
+	serverSessionCh := make(chan *Session, 1)
+	serverErrCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		sess, err := Server(conn, config)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		serverSessionCh <- sess
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	clientSession, err := Client(conn, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	var serverSession *Session
+	select {
+	case serverSession = <-serverSessionCh:
+	case err := <-serverErrCh:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for server session")
+	}
+	defer serverSession.Close()
+
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := serverSession.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := []byte("data consumed despite destination short write")
+	if _, err := clientStream.Write(payload); err != nil {
+		t.Fatal("client write failed:", err)
+	}
+
+	if n, err := serverStream.WriteTo(shortWriteWriter{n: 0}); n != 0 || err != io.ErrShortWrite {
+		t.Fatalf("WriteTo = (%d, %v); want (0, %v)", n, err, io.ErrShortWrite)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadUint32(&clientStream.peerConsumed) < uint32(len(payload)) {
+		if time.Now().After(deadline) {
+			t.Fatalf("peer consumed = %d; want at least %d", atomic.LoadUint32(&clientStream.peerConsumed), len(payload))
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -225,6 +225,10 @@ func (s *Session) Open() (io.ReadWriteCloser, error) {
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
+	if s.IsClosed() {
+		return nil, io.ErrClosedPipe
+	}
+
 	var deadline <-chan time.Time
 	if d, ok := s.acceptDeadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(time.Until(d))
@@ -234,6 +238,9 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 	select {
 	case stream := <-s.chAccepts:
+		if s.IsClosed() {
+			return nil, io.ErrClosedPipe
+		}
 		wrapper := &Stream{stream: stream}
 		// NOTE: no Close finalizer here (issue #116). io.Copy on an accepted
 		// stream dispatches to WriteTo promoted from the embedded *stream, so
@@ -271,11 +278,27 @@ func (s *Session) Close() error {
 	}
 
 	s.streamLock.Lock()
-	for k := range s.streams {
-		s.streams[k].sessionClose()
+	for k, stream := range s.streams {
+		stream.sessionClose()
+		if n := stream.recycleTokens(); n > 0 {
+			atomic.AddInt32(&s.bucket, int32(n))
+		}
+		delete(s.streams, k)
 	}
 	s.streamLock.Unlock()
-	return s.conn.Close()
+	err := s.conn.Close()
+	s.drainAccepts()
+	return err
+}
+
+func (s *Session) drainAccepts() {
+	for {
+		select {
+		case <-s.chAccepts:
+		default:
+			return
+		}
+	}
 }
 
 // CloseChan can be used by someone who wants to be notified immediately when this
@@ -431,10 +454,12 @@ func (s *Session) recvLoop() {
 			}
 			var accepted *stream
 			s.streamLock.Lock()
-			if _, ok := s.streams[sid]; !ok {
-				stream := newStream(sid, s.config.MaxFrameSize, s)
-				s.streams[sid] = stream
-				accepted = stream
+			if !s.IsClosed() {
+				if _, ok := s.streams[sid]; !ok {
+					stream := newStream(sid, s.config.MaxFrameSize, s)
+					s.streams[sid] = stream
+					accepted = stream
+				}
 			}
 			s.streamLock.Unlock()
 
@@ -442,6 +467,11 @@ func (s *Session) recvLoop() {
 				select {
 				case s.chAccepts <- accepted:
 				case <-s.die:
+					return
+				}
+				if s.IsClosed() {
+					s.drainAccepts()
+					return
 				}
 			}
 

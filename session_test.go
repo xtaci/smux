@@ -224,7 +224,7 @@ func TestWriteTo(t *testing.T) {
 
 	var rcvbuf bytes.Buffer
 	nw, ew := stream.WriteTo(&rcvbuf)
-	if ew != io.EOF {
+	if ew != nil {
 		t.Fatal(ew)
 	}
 
@@ -299,7 +299,7 @@ func TestWriteToV2(t *testing.T) {
 
 	var rcvbuf bytes.Buffer
 	nw, ew := stream.WriteTo(&rcvbuf)
-	if ew != io.EOF {
+	if ew != nil {
 		t.Fatal(ew)
 	}
 

@@ -51,8 +51,9 @@ type stream struct {
 	chWriterWakeup chan struct{}
 
 	// stream closing
-	die     chan struct{}
-	dieOnce sync.Once // Ensures die channel is closed only once
+	die         chan struct{}
+	dieOnce     sync.Once // Ensures die channel is closed only once
+	forcedClose uint32    // Set when Close or Session.Close aborts the stream.
 
 	// to handle FIN event(i.e. EOF from remote)
 	chFinEvent   chan struct{}
@@ -86,6 +87,8 @@ type bufferRing struct {
 	size  int
 	mask  int // bitmask for fast modulo when capacity is power of 2
 }
+
+const defaultBufferRingCapacity = 8
 
 func newBufferRing(capacity int) bufferRing {
 	if capacity < 1 {
@@ -148,8 +151,15 @@ func (r *bufferRing) pop() (buf []byte, head *[]byte, ok bool) {
 	r.size--
 	if r.size == 0 {
 		r.tail = r.head
+		r.shrinkIfEmpty()
 	}
 	return buf, head, true
+}
+
+func (r *bufferRing) shrinkIfEmpty() {
+	if r.size == 0 && len(r.bufs) > defaultBufferRingCapacity {
+		*r = newBufferRing(defaultBufferRingCapacity)
+	}
 }
 
 // consumeFront copies data from the front buffer to b, recycles the buffer if fully consumed,
@@ -170,6 +180,7 @@ func (r *bufferRing) consumeFront(b []byte) (n int, recycled *[]byte) {
 		r.size--
 		if r.size == 0 {
 			r.tail = r.head
+			r.shrinkIfEmpty()
 		}
 	}
 	return n, recycled
@@ -190,7 +201,7 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.peerWindow = initialPeerWindow                                  // set to initial window size
 	s.windowUpdateThreshold = uint32(sess.config.MaxStreamBuffer / 2) // cache threshold
 	// pre-allocate ring buffer to reduce allocations during data transfer
-	s.bufferRing = newBufferRing(8)
+	s.bufferRing = newBufferRing(defaultBufferRingCapacity)
 
 	return s
 }
@@ -243,6 +254,10 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 	// return tokens to session to allow more data to be received
 	if n > 0 {
 		s.sess.returnTokens(n)
+		// Both FINs may have arrived while this data was buffered. Retry
+		// cleanup after consuming it so the stream is removed as soon as the
+		// final buffered bytes have been delivered.
+		s.tryHalfCloseCleanup()
 		return n, nil
 	}
 
@@ -294,8 +309,13 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 
 		// send window update if necessary
 		if notifyConsumed > 0 {
-			return n, s.sendWindowUpdate(notifyConsumed)
+			err := s.sendWindowUpdate(notifyConsumed)
+			// A window update can fail after bytes have already been consumed;
+			// cleanup must not depend on the update succeeding.
+			s.tryHalfCloseCleanup()
+			return n, err
 		}
+		s.tryHalfCloseCleanup()
 		return n, nil
 	}
 
@@ -346,12 +366,24 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 			}
 
 			if ew != nil {
+				s.tryHalfCloseCleanup()
 				return n, ew
 			}
 			if nw != len(buf) {
+				s.tryHalfCloseCleanup()
 				return n, io.ErrShortWrite
 			}
+			s.tryHalfCloseCleanup()
 		} else if ew := s.waitRead(); ew != nil {
+			if ew == io.EOF {
+				if s.isForcedClosed() {
+					return n, io.ErrClosedPipe
+				}
+				return n, nil
+			}
+			if ew == io.ErrClosedPipe && s.halfCloseComplete() {
+				return n, nil
+			}
 			return n, ew
 		}
 	}
@@ -396,19 +428,38 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 			}
 
 			if ew != nil {
+				if notifyConsumed > 0 {
+					_ = s.sendWindowUpdate(notifyConsumed)
+				}
+				s.tryHalfCloseCleanup()
 				return n, ew
 			}
 			if nw != len(buf) {
+				if notifyConsumed > 0 {
+					_ = s.sendWindowUpdate(notifyConsumed)
+				}
+				s.tryHalfCloseCleanup()
 				return n, io.ErrShortWrite
 			}
 
 			// send window update
 			if notifyConsumed > 0 {
 				if err := s.sendWindowUpdate(notifyConsumed); err != nil {
+					s.tryHalfCloseCleanup()
 					return n, err
 				}
 			}
+			s.tryHalfCloseCleanup()
 		} else if ew := s.waitRead(); ew != nil {
+			if ew == io.EOF {
+				if s.isForcedClosed() {
+					return n, io.ErrClosedPipe
+				}
+				return n, nil
+			}
+			if ew == io.ErrClosedPipe && s.halfCloseComplete() {
+				return n, nil
+			}
 			return n, ew
 		}
 	}
@@ -676,6 +727,8 @@ func (s *stream) CloseWrite() error {
 // Close implements net.Conn
 // Close fully closes the stream (both read and write sides).
 func (s *stream) Close() error {
+	atomic.StoreUint32(&s.forcedClose, 1)
+
 	var once bool
 	s.dieOnce.Do(func() {
 		close(s.die)
@@ -683,6 +736,10 @@ func (s *stream) Close() error {
 	})
 
 	if !once {
+		// The stream may have been marked dead by half-close cleanup while
+		// unread data kept it in the session map. A later explicit Close means
+		// the caller is discarding that data, so still reclaim the stream.
+		s.sess.streamClosed(s.id)
 		return io.ErrClosedPipe
 	}
 
@@ -740,7 +797,10 @@ func (s *stream) SetDeadline(t time.Time) error {
 }
 
 // session closes
-func (s *stream) sessionClose() { s.dieOnce.Do(func() { close(s.die) }) }
+func (s *stream) sessionClose() {
+	atomic.StoreUint32(&s.forcedClose, 1)
+	s.dieOnce.Do(func() { close(s.die) })
+}
 
 // LocalAddr satisfies net.Conn interface
 func (s *stream) LocalAddr() net.Addr {
@@ -835,7 +895,44 @@ func (s *stream) tryHalfCloseCleanup() {
 	s.dieOnce.Do(func() {
 		close(s.die)
 	})
-	s.sess.streamClosed(s.id)
+
+	// Closing die wakes readers so they can observe EOF, but must not discard
+	// bytes that recvLoop queued before the peer's FIN. Keep the stream in the
+	// session map until those bytes are consumed; streamClosed recycles any
+	// remainder, so it is safe to call only after the ring is empty.
+	s.bufferLock.Lock()
+	drained := s.bufferRing.len() == 0
+	s.bufferLock.Unlock()
+	if drained {
+		s.sess.streamClosed(s.id)
+	}
+}
+
+func (s *stream) halfCloseComplete() bool {
+	if s.isForcedClosed() {
+		return false
+	}
+
+	select {
+	case <-s.chFinEvent:
+	default:
+		return false
+	}
+
+	select {
+	case <-s.chWriteClosed:
+	default:
+		return false
+	}
+
+	s.bufferLock.Lock()
+	drained := s.bufferRing.len() == 0
+	s.bufferLock.Unlock()
+	return drained && !s.isForcedClosed()
+}
+
+func (s *stream) isForcedClosed() bool {
+	return atomic.LoadUint32(&s.forcedClose) != 0
 }
 
 // stopTimer stops the supplied timer and drains its channel if needed.
