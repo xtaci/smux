@@ -126,8 +126,10 @@ type Session struct {
 	acceptDeadline  atomic.Value // deadline for Accept()
 
 	requestID        uint32            // Monotonic increasing write request ID
+	writeReqLock     sync.RWMutex      // fences write request admission during shutdown
 	shaper           chan writeRequest // a shaper for writing
 	sq               *shaperQueue
+	chShaperDone     chan struct{}
 	chShaperPending  chan struct{}
 	chShaperConsumed chan struct{}
 }
@@ -147,6 +149,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chProtoError = make(chan struct{})
 	s.chShaperPending = make(chan struct{}, 1)
 	s.chShaperConsumed = make(chan struct{}, 1)
+	s.chShaperDone = make(chan struct{})
 	s.sq = NewShaperQueue()
 
 	if client {
@@ -284,6 +287,10 @@ func (s *Session) Close() error {
 		return io.ErrClosedPipe
 	}
 
+	// Prevent requests from being enqueued after shaperLoop drains the queues.
+	s.writeReqLock.Lock()
+	s.writeReqLock.Unlock()
+
 	s.streamLock.Lock()
 	for k, stream := range s.streams {
 		stream.sessionClose()
@@ -294,6 +301,12 @@ func (s *Session) Close() error {
 	}
 	s.streamLock.Unlock()
 	err := s.conn.Close()
+	if s.chShaperDone != nil {
+		<-s.chShaperDone
+	}
+	// A request admission that raced with the shutdown signal may have won
+	// its select after shaperLoop's initial drain.
+	s.discardPendingWrites(io.ErrClosedPipe)
 	s.drainAccepts()
 	return err
 }
@@ -584,11 +597,27 @@ func (s *Session) keepalive() {
 // Eg: Control messages are prioritized over data messages, and shaper tries
 // its best to keep fair bandwidth among streams.
 func (s *Session) shaperLoop() {
+	defer func() {
+		err := io.ErrClosedPipe
+		select {
+		case <-s.chSocketWriteError:
+			if writeErr, ok := s.socketWriteError.Load().(error); ok && writeErr != nil {
+				err = writeErr
+			}
+		default:
+		}
+		s.writeReqLock.Lock()
+		s.discardPendingWrites(err)
+		s.writeReqLock.Unlock()
+		close(s.chShaperDone)
+	}()
 	chShaper := s.shaper
 
 	for {
 		select {
 		case <-s.die:
+			return
+		case <-s.chSocketWriteError:
 			return
 		case r := <-chShaper:
 			s.sq.Push(r)
@@ -610,6 +639,38 @@ func (s *Session) shaperLoop() {
 		case <-s.chShaperConsumed:
 			// re-enable shaper channel
 			chShaper = s.shaper
+		}
+	}
+}
+
+func (s *Session) discardPendingWrites(err error) {
+	if err == nil {
+		err = io.ErrClosedPipe
+	}
+	for {
+		select {
+		case req := <-s.shaper:
+			select {
+			case req.result <- writeResult{err: err}:
+			default:
+			}
+		default:
+			goto drainQueue
+		}
+	}
+
+drainQueue:
+	if s.sq == nil {
+		return
+	}
+	for {
+		req, ok := s.sq.Pop()
+		if !ok {
+			return
+		}
+		select {
+		case req.result <- writeResult{err: err}:
+		default:
 		}
 	}
 }
@@ -719,18 +780,35 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class C
 		seq:    atomic.AddUint32(&s.requestID, 1),
 		result: resultCh,
 	}
+	s.writeReqLock.RLock()
+	if s.IsClosed() {
+		s.writeReqLock.RUnlock()
+		resultChanPool.Put(resultCh)
+		return 0, io.ErrClosedPipe
+	}
+	select {
+	case <-s.chSocketWriteError:
+		s.writeReqLock.RUnlock()
+		resultChanPool.Put(resultCh)
+		return 0, s.socketWriteError.Load().(error)
+	default:
+	}
 	select {
 	case s.shaper <- req:
 	case <-s.die:
+		s.writeReqLock.RUnlock()
 		resultChanPool.Put(resultCh)
 		return 0, io.ErrClosedPipe
 	case <-s.chSocketWriteError:
+		s.writeReqLock.RUnlock()
 		resultChanPool.Put(resultCh)
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
+		s.writeReqLock.RUnlock()
 		resultChanPool.Put(resultCh)
 		return 0, ErrTimeout
 	}
+	s.writeReqLock.RUnlock()
 
 	select {
 	case result := <-resultCh:
