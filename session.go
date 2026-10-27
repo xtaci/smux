@@ -191,21 +191,28 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
+	// register before sending SYN, so frames the peer sends right after
+	// accepting are not dropped by recvLoop as belonging to an unknown stream.
+	s.streamLock.Lock()
+	s.streams[sid] = stream
+	s.streamLock.Unlock()
+
 	if _, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
+		s.streamClosed(sid)
 		return nil, err
 	}
 
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
 	select {
 	case <-s.chSocketReadError:
+		s.streamClosed(sid)
 		return nil, s.socketReadError.Load().(error)
 	case <-s.chSocketWriteError:
+		s.streamClosed(sid)
 		return nil, s.socketWriteError.Load().(error)
 	case <-s.die:
+		s.streamClosed(sid)
 		return nil, io.ErrClosedPipe
 	default:
-		s.streams[sid] = stream
 		wrapper := &Stream{stream: stream}
 		// NOTE(x): disabled finalizer for issue #997
 		/*
