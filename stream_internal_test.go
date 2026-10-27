@@ -80,6 +80,20 @@ func TestStreamWriteToReturnsForcedClose(t *testing.T) {
 	}
 }
 
+func TestStreamReadReturnsForcedClose(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			s := newUnitTestStream()
+			s.sess.config.Version = version
+			s.sessionClose()
+
+			if _, err := s.Read(make([]byte, 1)); err != io.ErrClosedPipe {
+				t.Fatalf("Read error = %v; want %v", err, io.ErrClosedPipe)
+			}
+		})
+	}
+}
+
 func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	s := newUnitTestStream()
 	conn, peer := net.Pipe()
@@ -432,6 +446,31 @@ func TestStreamWaitReadFinWithBufferedData(t *testing.T) {
 	}
 	if !bytes.Equal(readBuf, []byte("abc")) {
 		t.Fatalf("read mismatch: %q", readBuf)
+	}
+}
+
+func TestStreamWaitReadHalfCloseWithBufferedData(t *testing.T) {
+	s := newUnitTestStream()
+	buf := []byte("abc")
+	s.pushBytes(&buf)
+
+	s.fin()
+	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	s.tryHalfCloseCleanup()
+
+	if err := s.waitRead(); err != nil {
+		t.Fatalf("expected nil for buffered half-close stream, got %v", err)
+	}
+}
+
+func TestStreamWaitReadHalfCloseDrainedEOF(t *testing.T) {
+	s := newUnitTestStream()
+	s.fin()
+	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	s.tryHalfCloseCleanup()
+
+	if err := s.waitRead(); err != io.EOF {
+		t.Fatalf("expected io.EOF for drained half-close stream, got %v", err)
 	}
 }
 

@@ -271,6 +271,9 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 	// only when there's no data left in buffer, we return EOF to reader.
 	select {
 	case <-s.die:
+		if s.isForcedClosed() {
+			return 0, io.ErrClosedPipe
+		}
 		return 0, io.EOF
 	default:
 		return 0, ErrWouldBlock
@@ -327,6 +330,9 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
+		if s.isForcedClosed() {
+			return 0, io.ErrClosedPipe
+		}
 		return 0, io.EOF
 	default:
 		return 0, ErrWouldBlock
@@ -518,6 +524,15 @@ func (s *stream) waitRead() error {
 	case <-deadline:
 		return ErrTimeout
 	case <-s.die:
+		if s.isNormalHalfClosed() {
+			s.bufferLock.Lock()
+			drained := s.bufferRing.len() == 0
+			s.bufferLock.Unlock()
+			if drained {
+				return io.EOF
+			}
+			return nil
+		}
 		return io.ErrClosedPipe
 	}
 
