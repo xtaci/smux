@@ -737,6 +737,9 @@ EVENT_LOOP:
 					copy(buf[headerSize:], request.frame.data)
 					n, err = s.conn.Write(buf[:headerSize+len(request.frame.data)])
 				}
+				if err == nil && n != headerSize+len(request.frame.data) {
+					err = io.ErrShortWrite
+				}
 
 				n -= headerSize
 				if n < 0 {

@@ -174,6 +174,43 @@ func (c *delayedWriteErrorConn) Write([]byte) (int, error) {
 	return 0, c.err
 }
 
+type shortWriteConn struct {
+	net.Conn
+	writeN int
+}
+
+func (c *shortWriteConn) Write(p []byte) (int, error) {
+	if c.writeN < 0 {
+		return 0, nil
+	}
+	if c.writeN > len(p) {
+		return len(p), nil
+	}
+	return c.writeN, nil
+}
+
+type shortWriteBuffersConn struct {
+	net.Conn
+	writeN     int
+	writeErr   error
+	writeCalls int32
+}
+
+func (c *shortWriteBuffersConn) WriteBuffers(v [][]byte) (int, error) {
+	atomic.AddInt32(&c.writeCalls, 1)
+	total := 0
+	for _, b := range v {
+		total += len(b)
+	}
+	if c.writeN > total {
+		return total, c.writeErr
+	}
+	if c.writeN < 0 {
+		return 0, c.writeErr
+	}
+	return c.writeN, c.writeErr
+}
+
 func TestSocketWriteErrorDrainsPendingWriteRequests(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.KeepAliveDisabled = true
@@ -223,6 +260,88 @@ func TestSocketWriteErrorDrainsPendingWriteRequests(t *testing.T) {
 	}
 	if err := sess.Close(); err != nil {
 		t.Fatal("session close failed:", err)
+	}
+}
+
+func TestWriteFrameInternalShortWriteReturnsError(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.KeepAliveDisabled = true
+	conn, peer := net.Pipe()
+	defer peer.Close()
+
+	wrapped := &shortWriteConn{Conn: conn, writeN: headerSize + 1}
+	sess := newSession(cfg, wrapped, true)
+	defer sess.Close()
+
+	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
+	frame.data = []byte("payload")
+	n, err := sess.writeFrameInternal(frame, nil, CLSDATA)
+	if err != io.ErrShortWrite {
+		t.Fatalf("writeFrameInternal error = %v; want %v", err, io.ErrShortWrite)
+	}
+	if n < 0 || n > len(frame.data) {
+		t.Fatalf("writeFrameInternal n = %d; want within [0,%d]", n, len(frame.data))
+	}
+
+	select {
+	case <-sess.chSocketWriteError:
+	case <-time.After(time.Second):
+		t.Fatal("short write did not notify socket write error")
+	}
+}
+
+func TestWriteFrameInternalShortWriteFromWriteBuffersReturnsError(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.KeepAliveDisabled = true
+	conn, peer := net.Pipe()
+	defer peer.Close()
+
+	wrapped := &shortWriteBuffersConn{
+		Conn:   conn,
+		writeN: headerSize + 1, // only one payload byte reported written
+	}
+	sess := newSession(cfg, wrapped, true)
+	defer sess.Close()
+
+	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
+	frame.data = []byte("payload")
+	n, err := sess.writeFrameInternal(frame, nil, CLSDATA)
+	if err != io.ErrShortWrite {
+		t.Fatalf("writeFrameInternal error = %v; want %v", err, io.ErrShortWrite)
+	}
+	if n < 0 || n > len(frame.data) {
+		t.Fatalf("writeFrameInternal n = %d; want within [0,%d]", n, len(frame.data))
+	}
+	if calls := atomic.LoadInt32(&wrapped.writeCalls); calls == 0 {
+		t.Fatal("WriteBuffers was not used")
+	}
+
+	select {
+	case <-sess.chSocketWriteError:
+	case <-time.After(time.Second):
+		t.Fatal("short WriteBuffers did not notify socket write error")
+	}
+}
+
+func TestWriteFrameInternalWriteBuffersErrorPreserved(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.KeepAliveDisabled = true
+	conn, peer := net.Pipe()
+	defer peer.Close()
+
+	wantErr := errors.New("synthetic writebuffers failure")
+	wrapped := &shortWriteBuffersConn{
+		Conn:     conn,
+		writeN:   headerSize + 1,
+		writeErr: wantErr,
+	}
+	sess := newSession(cfg, wrapped, true)
+	defer sess.Close()
+
+	frame := newFrame(byte(cfg.Version), cmdPSH, 1)
+	frame.data = []byte("payload")
+	if _, err := sess.writeFrameInternal(frame, nil, CLSDATA); err != wantErr {
+		t.Fatalf("writeFrameInternal error = %v; want %v", err, wantErr)
 	}
 }
 
