@@ -46,7 +46,7 @@ var resultChanPool = sync.Pool{
 	},
 }
 
-// CLASSID represents the class of a frame
+// CLASSID identifies a frame's scheduling class.
 type CLASSID int
 
 const (
@@ -54,7 +54,7 @@ const (
 	CLSDATA
 )
 
-// timeoutError representing timeouts for operations such as accept, read and write
+// timeoutError represents a timeout during an operation such as accept, read, or write.
 //
 // To better cooperate with the standard library, timeoutError should implement the standard library's `net.Error`.
 //
@@ -269,7 +269,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
-// Accept Returns a generic ReadWriteCloser instead of smux.Stream
+// Accept returns the next stream as a generic io.ReadWriteCloser.
 func (s *Session) Accept() (io.ReadWriteCloser, error) {
 	return s.AcceptStream()
 }
@@ -321,8 +321,7 @@ func (s *Session) drainAccepts() {
 	}
 }
 
-// CloseChan can be used by someone who wants to be notified immediately when this
-// session is closed
+// CloseChan returns a channel that is closed when the session shuts down.
 func (s *Session) CloseChan() <-chan struct{} {
 	return s.die
 }
@@ -356,7 +355,7 @@ func (s *Session) notifyProtoError(err error) {
 	})
 }
 
-// IsClosed does a safe check to see if we have shutdown
+// IsClosed reports whether the session has shut down.
 func (s *Session) IsClosed() bool {
 	return atomic.LoadInt32(&s.closed) != 0
 }
@@ -398,7 +397,7 @@ func (s *Session) RemoteAddr() net.Addr {
 	return nil
 }
 
-// notify the session that a stream has closed
+// streamClosed removes a closed stream and returns its unused receive tokens.
 func (s *Session) streamClosed(sid uint32) {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
@@ -417,14 +416,14 @@ func (s *Session) streamClosed(sid uint32) {
 	delete(s.streams, sid)
 }
 
-// returnTokens is called by stream to return token after read
+// returnTokens returns receive-buffer capacity after a stream reads data.
 func (s *Session) returnTokens(n int) {
 	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
 		s.notifyBucket()
 	}
 }
 
-// recvLoop keeps on reading from underlying connection if tokens are available
+// recvLoop reads frames from the underlying connection while receive tokens are available.
 func (s *Session) recvLoop() {
 	var hdr rawHeader
 	var updHdr updHeader
@@ -593,9 +592,7 @@ func (s *Session) keepalive() {
 	}
 }
 
-// shaperLoop implements a priority queue and bandwidth shaping for write requests.
-// Eg: Control messages are prioritized over data messages, and shaper tries
-// its best to keep fair bandwidth among streams.
+// shaperLoop prioritizes control frames and schedules data frames fairly across streams.
 func (s *Session) shaperLoop() {
 	defer func() {
 		err := io.ErrClosedPipe

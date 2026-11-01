@@ -31,7 +31,7 @@ import (
 	"time"
 )
 
-// wrapper for GC
+// Stream is a wrapper around stream that exposes the public API.
 type Stream struct {
 	*stream
 }
@@ -162,8 +162,9 @@ func (r *bufferRing) shrinkIfEmpty() {
 	}
 }
 
-// consumeFront copies data from the front buffer to b, recycles the buffer if fully consumed,
-// and returns the number of bytes copied. Returns 0 if the ring is empty.
+// consumeFront copies data from the front buffer into b and recycles the buffer
+// when fully consumed. It returns the number of bytes copied and the recycled
+// buffer, if any.
 func (r *bufferRing) consumeFront(b []byte) (n int, recycled *[]byte) {
 	if r.size == 0 {
 		return 0, nil
@@ -211,7 +212,7 @@ func (s *stream) ID() uint32 {
 	return s.id
 }
 
-// Read reads data from the stream into the provided buffer.
+// Read reads data from the stream into b.
 func (s *stream) Read(b []byte) (n int, err error) {
 	if s.sess.config.Version == 2 {
 		for {
@@ -291,11 +292,8 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 	s.bufferLock.Lock()
 	n, recycled = s.bufferRing.consumeFront(b)
 
-	// In an ideal environment:
-	// If more than half of the buffer has been consumed, send a read ACK to the peer.
-	// With the ACK round-trip time taken into account, a continuous data stream
-	// will not slow down due to waiting for ACKs, as long as the consumer
-	// continues reading data.
+		// Send an update after consuming at least half the stream buffer. This
+		// threshold helps a continuous reader avoid stalling while waiting for ACKs.
 	//
 	// s.numRead == n indicates that this is the initial read.
 	s.numRead += uint32(n)
@@ -340,11 +338,9 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 }
 
 // WriteTo implements io.WriteTo
-// WriteTo writes data to w until there's no more data to write or when an error occurs.
-// The return value n is the number of bytes written. Any error encountered during the write is also returned.
-// WriteTo calls Write in a loop until there is no more data to write or when an error occurs.
-// If the underlying stream is a v2 stream, it will send window update to peer when necessary.
-// If the underlying stream is a v1 stream, it will not send window update to peer.
+// WriteTo writes stream data to w until the stream reaches EOF or an error occurs.
+// It returns the number of bytes written and any error encountered. For protocol
+// version 2, it sends window updates to the peer as needed.
 func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
 	switch s.sess.config.Version {
 	case 2:
@@ -354,7 +350,6 @@ func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
 	}
 }
 
-// check comments in WriteTo
 func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 	for {
 		var buf []byte
@@ -401,7 +396,6 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 	}
 }
 
-// check comments in WriteTo
 func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 	for {
 		var notifyConsumed uint32
@@ -477,7 +471,7 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 	}
 }
 
-// sendWindowUpdate sends a window update command to the peer.
+// sendWindowUpdate reports the number of bytes consumed and the receive window to the peer.
 func (s *stream) sendWindowUpdate(consumed uint32) error {
 	var timer *time.Timer
 	var deadline <-chan time.Time
@@ -553,8 +547,8 @@ func (s *stream) checkWriteClosed() error {
 
 // Write implements net.Conn
 //
-// Note that the behavior when multiple goroutines write concurrently is not deterministic,
-// frames may interleave in random way.
+// Concurrent Write calls may interleave at frame boundaries, and their ordering
+// is nondeterministic.
 func (s *stream) Write(b []byte) (n int, err error) {
 	switch s.sess.config.Version {
 	case 2:
@@ -780,8 +774,7 @@ func (s *stream) Close() error {
 	return err
 }
 
-// GetDieCh returns a readonly chan which can be readable
-// when the stream is to be closed.
+// GetDieCh returns a channel that is closed when the stream is closed.
 func (s *stream) GetDieCh() <-chan struct{} {
 	return s.die
 }
@@ -817,7 +810,7 @@ func (s *stream) SetDeadline(t time.Time) error {
 	return nil
 }
 
-// session closes
+// sessionClose closes the stream when its session shuts down.
 func (s *stream) sessionClose() {
 	atomic.StoreUint32(&s.forcedClose, 1)
 	s.dieOnce.Do(func() { close(s.die) })
@@ -843,14 +836,14 @@ func (s *stream) RemoteAddr() net.Addr {
 	return nil
 }
 
-// pushBytes append buf to buffers
+// pushBytes appends buf to the stream's receive buffer.
 func (s *stream) pushBytes(pbuf *[]byte) {
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
 	s.bufferRing.push(*pbuf, pbuf)
 }
 
-// recycleTokens transform remaining bytes to tokens(will truncate buffer)
+// recycleTokens returns the number of unread bytes and releases their buffers.
 func (s *stream) recycleTokens() (n int) {
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
@@ -878,7 +871,7 @@ func (s *stream) wakeupWriter() {
 	}
 }
 
-// update command
+// update records the peer's consumed-byte count and receive-window size.
 func (s *stream) update(consumed uint32, window uint32) {
 	// update peer consumed and window size immediately
 	atomic.StoreUint32(&s.peerConsumed, consumed)
@@ -891,7 +884,7 @@ func (s *stream) update(consumed uint32, window uint32) {
 	}
 }
 
-// mark this stream has been closed in protocol, i.e. receive EOF
+// fin records that the peer has closed its write side by sending FIN.
 func (s *stream) fin() {
 	s.finEventOnce.Do(func() {
 		close(s.chFinEvent)
