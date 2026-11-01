@@ -292,8 +292,8 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 	s.bufferLock.Lock()
 	n, recycled = s.bufferRing.consumeFront(b)
 
-		// Send an update after consuming at least half the stream buffer. This
-		// threshold helps a continuous reader avoid stalling while waiting for ACKs.
+	// Send an update after consuming at least half the stream buffer. This
+	// threshold helps a continuous reader avoid stalling while waiting for ACKs.
 	//
 	// s.numRead == n indicates that this is the initial read.
 	s.numRead += uint32(n)
