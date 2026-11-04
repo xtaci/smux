@@ -28,11 +28,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
-	"net/http"
-	_ "net/http/pprof"
 	"runtime"
 	"strings"
 	"sync"
@@ -40,12 +37,6 @@ import (
 	"testing"
 	"time"
 )
-
-func init() {
-	go func() {
-		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
-	}()
-}
 
 // setupServer starts new server listening on a random localhost port and
 // returns address of the server, function to stop the server, new client
@@ -1027,15 +1018,20 @@ func Test8GBTransferV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	session, _ := Client(cli, nil)
-	stream, _ := session.OpenStream()
+	session, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
 	const N = 8 << 30 // 8GB
 
 	testRandomLength(t, stream, N)
-	session.Close()
 }
 
-// This test validates large data transfer (8GB) over a single stream with random data
 func Test8GBTransferV2(t *testing.T) {
 	config := DefaultConfig()
 	config.Version = 2
@@ -1044,27 +1040,42 @@ func Test8GBTransferV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	session, _ := Client(cli, config)
-	stream, _ := session.OpenStream()
+	session, err := Client(cli, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
 	const N = 8 << 30 // 8GB
 
 	testRandomLength(t, stream, N)
-	session.Close()
 }
 
-// Test random length with random data transfer for 1GB
 func TestRandomLengthRandomDataTransferV1(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stop()
-	session, _ := Client(cli, nil)
-	stream, _ := session.OpenStream()
-	const N = 1 << 30 // 1GB
+	session, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	stream, err := session.OpenStream()
+	if err != nil {
+		session.Close()
+		t.Fatal(err)
+	}
+	const N = 8 << 20
 
 	testRandomLength(t, stream, N)
-	session.Close()
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRandomLengthRandomDataTransferV2(t *testing.T) {
@@ -1075,12 +1086,22 @@ func TestRandomLengthRandomDataTransferV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	session, _ := Client(cli, config)
-	stream, _ := session.OpenStream()
-	const N = 1 << 30 // 1GB
+	session, err := Client(cli, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	stream, err := session.OpenStream()
+	if err != nil {
+		session.Close()
+		t.Fatal(err)
+	}
+	const N = 8 << 20
 
 	testRandomLength(t, stream, N)
-	session.Close()
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testRandomLength(t *testing.T, stream *Stream, N int64) {
@@ -1091,13 +1112,18 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 	readerLenRand := rand.New(rand.NewSource(seed + 2))
 	const maxChunk = 1 << 20
 
-	bytesSent := int64(0)
+	type writeResult struct {
+		bytesSent int64
+		err       error
+	}
+	writerDone := make(chan writeResult, 1)
 	bytesReceived := int64(0)
 
 	// Writer goroutine
 	go func() {
 		r := rand.New(writerSrc)
 		sndbuf := make([]byte, maxChunk)
+		bytesSent := int64(0)
 		lastPrint := int64(0)
 		for bytesSent < N {
 			length := writerLenRand.Intn(maxChunk) + 1 // Random length between 1 and 1MB
@@ -1106,12 +1132,19 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 			}
 			buf := sndbuf[:length]
 			if _, err := r.Read(buf); err != nil {
-				t.Errorf("Rand read error: %v", err)
+				writerDone <- writeResult{bytesSent: bytesSent, err: err}
+				_ = stream.Close()
 				return
 			}
 			n, err := stream.Write(buf)
 			if err != nil {
-				t.Errorf("Write error: %v", err)
+				writerDone <- writeResult{bytesSent: bytesSent, err: err}
+				_ = stream.Close()
+				return
+			}
+			if n != len(buf) {
+				writerDone <- writeResult{bytesSent: bytesSent, err: io.ErrShortWrite}
+				_ = stream.Close()
 				return
 			}
 			bytesSent += int64(n)
@@ -1120,6 +1153,7 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 				t.Log("Sent:", bytesSent, "bytes")
 			}
 		}
+		writerDone <- writeResult{bytesSent: bytesSent}
 	}()
 
 	// Reader goroutine
@@ -1135,7 +1169,9 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 		buf := rcvbuf[:length]
 		n, err := stream.Read(buf)
 		if err != nil && err != io.EOF {
-			t.Fatalf("Read error: %v", err)
+			_ = stream.Close()
+			result := <-writerDone
+			t.Fatalf("Read error: %v (writer sent %d bytes; error: %v)", err, result.bytesSent, result.err)
 		}
 		if n > 0 {
 			if _, err := r.Read(expbuf[:n]); err != nil {
@@ -1144,10 +1180,17 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 			if !bytes.Equal(buf[:n], expbuf[:n]) {
 				for i := 0; i < n; i++ {
 					if buf[i] != expbuf[i] {
-						t.Fatalf("Data mismatch at byte %d: got %v, want %v", bytesReceived+int64(i), buf[i], expbuf[i])
+						_ = stream.Close()
+						result := <-writerDone
+						t.Fatalf("Data mismatch at byte %d: got %v, want %v (writer error: %v)", bytesReceived+int64(i), buf[i], expbuf[i], result.err)
 					}
 				}
 			}
+		}
+		if err == io.EOF && bytesReceived+int64(n) < N {
+			_ = stream.Close()
+			result := <-writerDone
+			t.Fatalf("unexpected EOF after %d bytes (writer sent %d bytes; error: %v)", bytesReceived+int64(n), result.bytesSent, result.err)
 		}
 		bytesReceived += int64(n)
 		if bytesReceived-lastPrint >= (1 << 28) { // Log every 256MB
@@ -1156,6 +1199,13 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 		}
 	}
 
+	result := <-writerDone
+	if result.err != nil {
+		t.Fatalf("Write failed after %d bytes: %v", result.bytesSent, result.err)
+	}
+	if result.bytesSent != N {
+		t.Fatalf("writer sent %d bytes; want %d", result.bytesSent, N)
+	}
 }
 
 func BenchmarkAcceptClose(b *testing.B) {

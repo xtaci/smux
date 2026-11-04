@@ -760,3 +760,77 @@ func TestWriteV2TimeoutWhenWindowZero(t *testing.T) {
 		t.Fatalf("expected ErrTimeout, got %v", err)
 	}
 }
+
+func TestWriteV2CounterWraparound(t *testing.T) {
+	config := DefaultConfig()
+	config.Version = 2
+	clientConn, serverConn := net.Pipe()
+	clientSession, err := Client(clientConn, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	serverSession, err := Server(serverConn, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := serverSession.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const transferSize = 512 << 10
+	// Model an existing transfer just below 4 GiB, then send through the wrap.
+	start := ^uint32(0) - 1023
+	atomic.StoreUint32(&clientStream.numWritten, start)
+	atomic.StoreUint32(&clientStream.peerConsumed, start)
+	atomic.StoreUint32(&serverStream.numRead, start)
+
+	payload := bytes.Repeat([]byte{0x5a}, transferSize)
+	writeDone := make(chan error, 1)
+	go func() {
+		n, err := clientStream.Write(payload)
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		writeDone <- err
+	}()
+
+	received := make([]byte, len(payload))
+	if _, err := io.ReadFull(serverStream, received); err != nil {
+		t.Fatal("read across counter wraparound:", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal("write across counter wraparound:", err)
+	}
+	if !bytes.Equal(received, payload) {
+		t.Fatal("payload changed across counter wraparound")
+	}
+
+	want := start + uint32(transferSize)
+	if want >= start {
+		t.Fatal("test transfer did not cross the uint32 boundary")
+	}
+	if got := atomic.LoadUint32(&clientStream.numWritten); got != want {
+		t.Fatalf("numWritten = %d; want %d", got, want)
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		if got := atomic.LoadUint32(&clientStream.peerConsumed); got == want {
+			break
+		}
+		select {
+		case <-clientStream.chUpdate:
+		case <-timer.C:
+			t.Fatalf("peerConsumed = %d; want %d", atomic.LoadUint32(&clientStream.peerConsumed), want)
+		}
+	}
+}

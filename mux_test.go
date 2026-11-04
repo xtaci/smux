@@ -141,3 +141,21 @@ func TestConfigMaxReceiveBufferUpperBound(t *testing.T) {
 		t.Fatal("client should reject excessive MaxReceiveBuffer")
 	}
 }
+
+func TestConfigKeepAliveDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	config.KeepAliveInterval = 0
+	config.KeepAliveTimeout = 0
+	if err := VerifyConfig(config); err != nil {
+		t.Fatalf("VerifyConfig rejected disabled keep-alive settings: %v", err)
+	}
+}
+
+func TestConfigUnsupportedVersion(t *testing.T) {
+	config := DefaultConfig()
+	config.Version = 3
+	if err := VerifyConfig(config); err == nil {
+		t.Fatal("VerifyConfig accepted an unsupported protocol version")
+	}
+}
