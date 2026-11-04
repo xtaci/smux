@@ -1,6 +1,6 @@
 <img src="assets/smux.png" alt="smux" height="35px" />
 
-[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Created At][5]][6] [![Coverage][9]][10] [![Sourcegraph][11]][12]
+[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Created At][5]][6] [![Coverage][9]][10]
 
 <img src="assets/mux.jpg" alt="smux" height="120px" /> 
 
@@ -12,9 +12,6 @@
 [6]: https://github.com/xtaci/smux
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
-[11]: https://sourcegraph.com/github.com/xtaci/smux/-/badge.svg
-[12]: https://sourcegraph.com/github.com/xtaci/smux?badge
-
 [English](README.md)
 
 ## Introduction
