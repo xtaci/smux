@@ -134,26 +134,29 @@ func TestEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	session, _ := Client(cli, nil)
-	stream, _ := session.OpenStream()
+	session, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
 	const N = 100
 	buf := make([]byte, 10)
-	var sent strings.Builder
-	var received strings.Builder
 	for i := 0; i < N; i++ {
 		msg := fmt.Sprintf("hello%v", i)
-		stream.Write([]byte(msg))
-		sent.WriteString(msg)
-		if n, err := stream.Read(buf); err != nil {
-			t.Fatal(err)
-		} else {
-			received.WriteString(string(buf[:n]))
+		if n, err := stream.Write([]byte(msg)); err != nil || n != len(msg) {
+			t.Fatalf("write %q = (%d, %v); want (%d, nil)", msg, n, err, len(msg))
+		}
+		if _, err := io.ReadFull(stream, buf[:len(msg)]); err != nil {
+			t.Fatalf("read echo for %q: %v", msg, err)
+		}
+		if got := string(buf[:len(msg)]); got != msg {
+			t.Fatalf("echo = %q; want %q", got, msg)
 		}
 	}
-	if sent.String() != received.String() {
-		t.Fatal("data mimatch")
-	}
-	session.Close()
 }
 
 func TestWriteTo(t *testing.T) {

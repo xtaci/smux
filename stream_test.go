@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -140,7 +139,10 @@ func TestHalfCloseBasic(t *testing.T) {
 	defer stop()
 
 	// Create client session
-	clientSession, _ := Client(cli, nil)
+	clientSession, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer clientSession.Close()
 
 	// Get server session
@@ -220,14 +222,22 @@ func TestHalfCloseDoubleCloseWrite(t *testing.T) {
 	}
 	defer stop()
 
-	clientSession, _ := Client(cli, nil)
+	clientSession, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer clientSession.Close()
 
 	serverSession := <-serverSessionCh
 	defer serverSession.Close()
 
-	clientStream, _ := clientSession.OpenStream()
-	serverSession.AcceptStream() // accept to avoid blocking
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverSession.AcceptStream(); err != nil {
+		t.Fatal(err)
+	}
 
 	// First CloseWrite should succeed
 	err = clientStream.CloseWrite()
@@ -250,69 +260,67 @@ func TestHalfCloseBidirectional(t *testing.T) {
 	}
 	defer stop()
 
-	clientSession, _ := Client(cli, nil)
+	clientSession, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer clientSession.Close()
 
 	serverSession := <-serverSessionCh
 	defer serverSession.Close()
 
-	clientStream, _ := clientSession.OpenStream()
-	serverStream, _ := serverSession.AcceptStream()
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := serverSession.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Use channels to coordinate the test
-	clientWriteDone := make(chan struct{})
-	serverWriteDone := make(chan struct{})
+	deadline := time.Now().Add(5 * time.Second)
+	if err := clientStream.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverStream.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	clientData := []byte("client data")
+	serverData := []byte("server data")
+	if n, err := clientStream.Write(clientData); err != nil || n != len(clientData) {
+		t.Fatalf("client write = (%d, %v); want (%d, nil)", n, err, len(clientData))
+	}
+	if n, err := serverStream.Write(serverData); err != nil || n != len(serverData) {
+		t.Fatalf("server write = (%d, %v); want (%d, nil)", n, err, len(serverData))
+	}
+	if err := clientStream.CloseWrite(); err != nil {
+		t.Fatal("client CloseWrite failed:", err)
+	}
+	if err := serverStream.CloseWrite(); err != nil {
+		t.Fatal("server CloseWrite failed:", err)
+	}
 
-	// Client writes, waits for server write, then half-closes and reads
-	go func() {
-		defer wg.Done()
-		clientStream.Write([]byte("client data"))
-		close(clientWriteDone)
-
-		// Wait for server to write before closing
-		<-serverWriteDone
-
-		// Read first, then close write
-		buf := make([]byte, 100)
-		n, err := clientStream.Read(buf)
-		if err != nil && err != io.EOF {
-			t.Errorf("client read failed: %v", err)
-			return
-		}
-		if string(buf[:n]) != "server data" {
-			t.Errorf("client got wrong data: %s", buf[:n])
-		}
-
-		clientStream.CloseWrite()
-	}()
-
-	// Server writes, waits for client write, then half-closes and reads
-	go func() {
-		defer wg.Done()
-		serverStream.Write([]byte("server data"))
-		close(serverWriteDone)
-
-		// Wait for client to write before closing
-		<-clientWriteDone
-
-		// Read first, then close write
-		buf := make([]byte, 100)
-		n, err := serverStream.Read(buf)
-		if err != nil && err != io.EOF {
-			t.Errorf("server read failed: %v", err)
-			return
-		}
-		if string(buf[:n]) != "client data" {
-			t.Errorf("server got wrong data: %s", buf[:n])
-		}
-
-		serverStream.CloseWrite()
-	}()
-
-	wg.Wait()
+	clientReceived := make([]byte, len(serverData))
+	if _, err := io.ReadFull(clientStream, clientReceived); err != nil {
+		t.Fatal("client read failed:", err)
+	}
+	if !bytes.Equal(clientReceived, serverData) {
+		t.Fatalf("client received %q; want %q", clientReceived, serverData)
+	}
+	serverReceived := make([]byte, len(clientData))
+	if _, err := io.ReadFull(serverStream, serverReceived); err != nil {
+		t.Fatal("server read failed:", err)
+	}
+	if !bytes.Equal(serverReceived, clientData) {
+		t.Fatalf("server received %q; want %q", serverReceived, clientData)
+	}
+	if _, err := clientStream.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("client read after peer half-close = %v; want EOF", err)
+	}
+	if _, err := serverStream.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("server read after peer half-close = %v; want EOF", err)
+	}
 }
 
 // TestHalfCloseWithFullClose tests that Close() still works correctly
@@ -323,17 +331,29 @@ func TestHalfCloseWithFullClose(t *testing.T) {
 	}
 	defer stop()
 
-	clientSession, _ := Client(cli, nil)
+	clientSession, err := Client(cli, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer clientSession.Close()
 
 	serverSession := <-serverSessionCh
 	defer serverSession.Close()
 
-	clientStream, _ := clientSession.OpenStream()
-	serverStream, _ := serverSession.AcceptStream()
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := serverSession.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Write some data
-	clientStream.Write([]byte("hello"))
+	payload := []byte("hello")
+	if n, err := clientStream.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("client write = (%d, %v); want (%d, nil)", n, err, len(payload))
+	}
 
 	// Full close should still work
 	err = clientStream.Close()
@@ -349,15 +369,22 @@ func TestHalfCloseWithFullClose(t *testing.T) {
 
 	// Server should get EOF
 	buf := make([]byte, 100)
-	serverStream.SetReadDeadline(time.Now().Add(time.Second))
+	if err := serverStream.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var received bytes.Buffer
 	for {
-		_, err = serverStream.Read(buf)
+		n, err := serverStream.Read(buf)
+		received.Write(buf[:n])
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatal("unexpected error:", err)
 		}
+	}
+	if !bytes.Equal(received.Bytes(), payload) {
+		t.Fatalf("server received %q; want %q", received.Bytes(), payload)
 	}
 }
 
@@ -570,12 +597,18 @@ func TestHalfCloseV2(t *testing.T) {
 	config.Version = 2
 
 	serverSessionCh := make(chan *Session, 1)
+	serverErrCh := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
+			serverErrCh <- err
 			return
 		}
-		sess, _ := Server(conn, config)
+		sess, err := Server(conn, config)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
 		serverSessionCh <- sess
 	}()
 
@@ -583,24 +616,54 @@ func TestHalfCloseV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer conn.Close()
 
-	clientSession, _ := Client(conn, config)
+	clientSession, err := Client(conn, config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer clientSession.Close()
 
-	serverSession := <-serverSessionCh
+	var serverSession *Session
+	select {
+	case serverSession = <-serverSessionCh:
+	case err := <-serverErrCh:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for server session")
+	}
 	defer serverSession.Close()
 
-	clientStream, _ := clientSession.OpenStream()
-	serverStream, _ := serverSession.AcceptStream()
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStream, err := serverSession.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	if err := clientStream.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverStream.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
 
 	// Client writes data then half-closes
 	testData := []byte("hello v2")
-	clientStream.Write(testData)
-	clientStream.CloseWrite()
+	if n, err := clientStream.Write(testData); err != nil || n != len(testData) {
+		t.Fatalf("client write = (%d, %v); want (%d, nil)", n, err, len(testData))
+	}
+	if err := clientStream.CloseWrite(); err != nil {
+		t.Fatal("client CloseWrite failed:", err)
+	}
 
 	// Server reads data
 	buf := make([]byte, len(testData))
-	io.ReadFull(serverStream, buf)
+	if _, err := io.ReadFull(serverStream, buf); err != nil {
+		t.Fatal("server read failed:", err)
+	}
 	if !bytes.Equal(buf, testData) {
 		t.Fatalf("data mismatch: got %v, want %v", buf, testData)
 	}
@@ -613,9 +676,11 @@ func TestHalfCloseV2(t *testing.T) {
 
 	// Server can still write
 	responseData := []byte("response v2")
-	_, err = serverStream.Write(responseData)
-	if err != nil {
-		t.Fatal("server write failed:", err)
+	if n, err := serverStream.Write(responseData); err != nil || n != len(responseData) {
+		t.Fatalf("server write = (%d, %v); want (%d, nil)", n, err, len(responseData))
+	}
+	if err := serverStream.CloseWrite(); err != nil {
+		t.Fatal("server CloseWrite failed:", err)
 	}
 
 	// Client can still read

@@ -38,7 +38,9 @@ func (b *buffer) Close() error {
 }
 
 func TestConfig(t *testing.T) {
-	VerifyConfig(DefaultConfig())
+	if err := VerifyConfig(DefaultConfig()); err != nil {
+		t.Fatalf("default config is invalid: %v", err)
+	}
 
 	config := DefaultConfig()
 	config.KeepAliveInterval = 0
