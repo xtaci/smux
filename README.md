@@ -1,6 +1,6 @@
 <img src="assets/smux.png" alt="smux" height="35px" />
 
-[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Coverage][9]][10] [![Sourcegraph][11]][12]
+[![GoDoc][1]][2] [![MIT licensed][3]][4] [![Created At][5]][6] [![Coverage][9]][10] [![Sourcegraph][11]][12]
 
 <img src="assets/mux.jpg" alt="smux" height="120px" /> 
 
@@ -8,6 +8,8 @@
 [2]: https://godoc.org/github.com/xtaci/smux
 [3]: https://img.shields.io/badge/license-MIT-blue.svg
 [4]: LICENSE
+[5]: https://img.shields.io/github/created-at/xtaci/smux
+[6]: https://github.com/xtaci/smux
 [9]: https://codecov.io/gh/xtaci/smux/branch/master/graph/badge.svg
 [10]: https://codecov.io/gh/xtaci/smux
 [11]: https://sourcegraph.com/github.com/xtaci/smux/-/badge.svg
