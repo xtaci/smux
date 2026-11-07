@@ -769,51 +769,50 @@ func (s *Session) writeControlFrame(f Frame) (n int, err error) {
 	return s.writeFrameInternal(f, timer.C, CLSCTRL)
 }
 
+func (s *Session) sendWriteRequest(req writeRequest, deadline <-chan time.Time) (ret error) {
+	s.writeReqLock.RLock()
+	defer s.writeReqLock.RUnlock()
+
+	if s.IsClosed() {
+		return io.ErrClosedPipe
+	}
+
+	select {
+	case <-s.chSocketWriteError:
+		return s.socketWriteError.Load().(error)
+	default:
+	}
+
+	select {
+	case s.shaper <- req:
+		return nil
+	case <-s.die:
+		return io.ErrClosedPipe
+	case <-s.chSocketWriteError:
+		return s.socketWriteError.Load().(error)
+	case <-deadline:
+		return ErrTimeout
+	}
+}
+
 // internal writeFrame version to support deadline used in keepalive
-func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class CLASSID) (int, error) {
+func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class CLASSID) (n int, err error) {
 	// get result channel from pool
 	resultCh := resultChanPool.Get().(chan writeResult)
 
-	req := writeRequest{
+	err = s.sendWriteRequest(writeRequest{
 		class:  class,
 		frame:  f,
 		seq:    atomic.AddUint32(&s.requestID, 1),
 		result: resultCh,
+	}, deadline)
+	if err != nil {
+		goto recycle
 	}
-	s.writeReqLock.RLock()
-	if s.IsClosed() {
-		s.writeReqLock.RUnlock()
-		resultChanPool.Put(resultCh)
-		return 0, io.ErrClosedPipe
-	}
-	select {
-	case <-s.chSocketWriteError:
-		s.writeReqLock.RUnlock()
-		resultChanPool.Put(resultCh)
-		return 0, s.socketWriteError.Load().(error)
-	default:
-	}
-	select {
-	case s.shaper <- req:
-	case <-s.die:
-		s.writeReqLock.RUnlock()
-		resultChanPool.Put(resultCh)
-		return 0, io.ErrClosedPipe
-	case <-s.chSocketWriteError:
-		s.writeReqLock.RUnlock()
-		resultChanPool.Put(resultCh)
-		return 0, s.socketWriteError.Load().(error)
-	case <-deadline:
-		s.writeReqLock.RUnlock()
-		resultChanPool.Put(resultCh)
-		return 0, ErrTimeout
-	}
-	s.writeReqLock.RUnlock()
 
 	select {
 	case result := <-resultCh:
-		resultChanPool.Put(resultCh)
-		return result.n, result.err
+		n, err = result.n, result.err
 	case <-s.die:
 		// Cannot recycle channel here - sendLoop may still write to it
 		return 0, io.ErrClosedPipe
@@ -824,4 +823,8 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class C
 		// Cannot recycle channel here - sendLoop may still write to it
 		return 0, ErrTimeout
 	}
+
+recycle:
+	resultChanPool.Put(resultCh)
+	return
 }
