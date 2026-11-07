@@ -152,10 +152,9 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chShaperDone = make(chan struct{})
 	s.sq = NewShaperQueue()
 
+	s.nextStreamID = 0
 	if client {
 		s.nextStreamID = 1
-	} else {
-		s.nextStreamID = 0
 	}
 
 	go s.shaperLoop()
@@ -167,30 +166,34 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	return s
 }
 
+// generate stream id
+func (s *Session) allocStreamID() (uint32, bool) {
+	s.nextStreamIDLock.Lock()
+	defer s.nextStreamIDLock.Unlock()
+
+	if s.goAway > 0 {
+		return 0, false
+	}
+	// check for stream id overflow
+	if s.nextStreamID+2 < s.nextStreamID {
+		s.goAway = 1
+		return 0, false
+	}
+	// allocate next stream id
+	s.nextStreamID += 2
+	return s.nextStreamID, true
+}
+
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
 	if s.IsClosed() {
 		return nil, io.ErrClosedPipe
 	}
 
-	// generate stream id
-	s.nextStreamIDLock.Lock()
-	if s.goAway > 0 {
-		s.nextStreamIDLock.Unlock()
+	sid, ok := s.allocStreamID()
+	if !ok {
 		return nil, ErrGoAway
 	}
-
-	// check for stream id overflow
-	if s.nextStreamID+2 < s.nextStreamID {
-		s.goAway = 1
-		s.nextStreamIDLock.Unlock()
-		return nil, ErrGoAway
-	}
-
-	// allocate next stream id
-	s.nextStreamID += 2
-	sid := s.nextStreamID
-	s.nextStreamIDLock.Unlock()
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
@@ -200,21 +203,18 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streams[sid] = stream
 	s.streamLock.Unlock()
 
-	if _, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
-		s.streamClosed(sid)
-		return nil, err
+	_, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid))
+	if err != nil {
+		goto cleanup
 	}
 
 	select {
 	case <-s.chSocketReadError:
-		s.streamClosed(sid)
-		return nil, s.socketReadError.Load().(error)
+		err = s.socketReadError.Load().(error)
 	case <-s.chSocketWriteError:
-		s.streamClosed(sid)
-		return nil, s.socketWriteError.Load().(error)
+		err = s.socketWriteError.Load().(error)
 	case <-s.die:
-		s.streamClosed(sid)
-		return nil, io.ErrClosedPipe
+		err = io.ErrClosedPipe
 	default:
 		wrapper := &Stream{stream: stream}
 		// NOTE(x): disabled finalizer for issue #997
@@ -225,6 +225,10 @@ func (s *Session) OpenStream() (*Stream, error) {
 		*/
 		return wrapper, nil
 	}
+
+cleanup:
+	s.streamClosed(sid)
+	return nil, err
 }
 
 // Open returns a generic ReadWriteCloser
@@ -274,6 +278,19 @@ func (s *Session) Accept() (io.ReadWriteCloser, error) {
 	return s.AcceptStream()
 }
 
+func (s *Session) closeStreams() {
+	s.streamLock.Lock()
+	defer s.streamLock.Unlock()
+
+	for k, stream := range s.streams {
+		stream.sessionClose()
+		if n := stream.recycleTokens(); n > 0 {
+			atomic.AddInt32(&s.bucket, int32(n))
+		}
+		delete(s.streams, k)
+	}
+}
+
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
 	var once bool
@@ -291,15 +308,7 @@ func (s *Session) Close() error {
 	s.writeReqLock.Lock()
 	s.writeReqLock.Unlock()
 
-	s.streamLock.Lock()
-	for k, stream := range s.streams {
-		stream.sessionClose()
-		if n := stream.recycleTokens(); n > 0 {
-			atomic.AddInt32(&s.bucket, int32(n))
-		}
-		delete(s.streams, k)
-	}
-	s.streamLock.Unlock()
+	s.closeStreams()
 	err := s.conn.Close()
 	if s.chShaperDone != nil {
 		<-s.chShaperDone
