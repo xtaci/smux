@@ -108,15 +108,15 @@ type Session struct {
 	closed  int32 // atomic flag for fast IsClosed check
 
 	// socket error handling
-	socketReadError      atomic.Value
-	socketWriteError     atomic.Value
+	socketReadError      error
+	socketWriteError     error
 	chSocketReadError    chan struct{}
 	chSocketWriteError   chan struct{}
 	socketReadErrorOnce  sync.Once
 	socketWriteErrorOnce sync.Once
 
 	// smux protocol errors
-	protoError     atomic.Value
+	protoError     error
 	chProtoError   chan struct{}
 	protoErrorOnce sync.Once
 
@@ -210,9 +210,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	select {
 	case <-s.chSocketReadError:
-		err = s.socketReadError.Load().(error)
+		err = s.socketReadError
 	case <-s.chSocketWriteError:
-		err = s.socketWriteError.Load().(error)
+		err = s.socketWriteError
 	case <-s.die:
 		err = io.ErrClosedPipe
 	default:
@@ -265,9 +265,9 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case <-deadline:
 		return nil, ErrTimeout
 	case <-s.chSocketReadError:
-		return nil, s.socketReadError.Load().(error)
+		return nil, s.socketReadError
 	case <-s.chProtoError:
-		return nil, s.protoError.Load().(error)
+		return nil, s.protoError
 	case <-s.die:
 		return nil, io.ErrClosedPipe
 	}
@@ -345,21 +345,21 @@ func (s *Session) notifyBucket() {
 
 func (s *Session) notifyReadError(err error) {
 	s.socketReadErrorOnce.Do(func() {
-		s.socketReadError.Store(err)
+		s.socketReadError = err
 		close(s.chSocketReadError)
 	})
 }
 
 func (s *Session) notifyWriteError(err error) {
 	s.socketWriteErrorOnce.Do(func() {
-		s.socketWriteError.Store(err)
+		s.socketWriteError = err
 		close(s.chSocketWriteError)
 	})
 }
 
 func (s *Session) notifyProtoError(err error) {
 	s.protoErrorOnce.Do(func() {
-		s.protoError.Store(err)
+		s.protoError = err
 		close(s.chProtoError)
 	})
 }
@@ -607,8 +607,8 @@ func (s *Session) shaperLoop() {
 		err := io.ErrClosedPipe
 		select {
 		case <-s.chSocketWriteError:
-			if writeErr, ok := s.socketWriteError.Load().(error); ok && writeErr != nil {
-				err = writeErr
+			if s.socketWriteError != nil {
+				err = s.socketWriteError
 			}
 		default:
 		}
@@ -788,7 +788,7 @@ func (s *Session) sendWriteRequest(req writeRequest, deadline <-chan time.Time) 
 
 	select {
 	case <-s.chSocketWriteError:
-		return s.socketWriteError.Load().(error)
+		return s.socketWriteError
 	default:
 	}
 
@@ -798,7 +798,7 @@ func (s *Session) sendWriteRequest(req writeRequest, deadline <-chan time.Time) 
 	case <-s.die:
 		return io.ErrClosedPipe
 	case <-s.chSocketWriteError:
-		return s.socketWriteError.Load().(error)
+		return s.socketWriteError
 	case <-deadline:
 		return ErrTimeout
 	}
@@ -827,7 +827,7 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class C
 		return 0, io.ErrClosedPipe
 	case <-s.chSocketWriteError:
 		// Cannot recycle channel here - sendLoop may still write to it
-		return 0, s.socketWriteError.Load().(error)
+		return 0, s.socketWriteError
 	case <-deadline:
 		// Cannot recycle channel here - sendLoop may still write to it
 		return 0, ErrTimeout

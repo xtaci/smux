@@ -368,7 +368,7 @@ func TestNotifyWriteErrorDoesNotWaitForWriteAdmissionLock(t *testing.T) {
 	default:
 		t.Fatal("write error notification did not close the error channel")
 	}
-	if got := sess.socketWriteError.Load(); got != writeErr {
+	if got := sess.socketWriteError; got != writeErr {
 		t.Fatalf("stored write error = %v; want %v", got, writeErr)
 	}
 }
