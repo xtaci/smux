@@ -512,9 +512,9 @@ func (s *stream) waitRead() error {
 		}
 		return io.EOF
 	case <-s.sess.chSocketReadError:
-		return s.sess.socketReadError.Load().(error)
+		return s.sess.socketReadError
 	case <-s.sess.chProtoError:
-		return s.sess.protoError.Load().(error)
+		return s.sess.protoError
 	case <-deadline:
 		return ErrTimeout
 	case <-s.die:
@@ -706,7 +706,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		case <-deadline:
 			return sent, ErrTimeout
 		case <-s.sess.chSocketWriteError:
-			return sent, s.sess.socketWriteError.Load().(error)
+			return sent, s.sess.socketWriteError
 		case <-s.chUpdate: // notify of remote data consuming and window update
 			continue
 		}
