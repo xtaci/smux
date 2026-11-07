@@ -1016,6 +1016,10 @@ func TestWriteDeadline(t *testing.T) {
 }
 
 func Test8GBTransferV1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 8GB transfer in short mode")
+	}
+
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
 		t.Fatal(err)
@@ -1036,6 +1040,10 @@ func Test8GBTransferV1(t *testing.T) {
 }
 
 func Test8GBTransferV2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 8GB transfer in short mode")
+	}
+
 	config := DefaultConfig()
 	config.Version = 2
 	_, stop, cli, err := setupServerV2(t)
