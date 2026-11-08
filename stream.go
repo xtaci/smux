@@ -55,8 +55,8 @@ type stream struct {
 
 	// stream closing
 	die         chan struct{}
-	dieOnce     sync.Once // Ensures die channel is closed only once
-	forcedClose uint32    // Set when Close or Session.Close aborts the stream.
+	dieOnce     sync.Once     // Ensures die channel is closed only once
+	forcedClose atomic.Uint32 // Set when Close or Session.Close aborts the stream.
 
 	// to handle FIN event(i.e. EOF from remote)
 	chFinEvent   chan struct{}
@@ -70,12 +70,12 @@ type stream struct {
 	readDeadline, writeDeadline *deadline.Deadline
 
 	// v2 stream fields(flow control)
-	numRead    uint32 // count num of bytes read
-	numWritten uint32 // count num of bytes written
-	incr       uint32 // bytes sent since last window update
+	numRead    uint32        // count num of bytes read
+	numWritten atomic.Uint32 // count num of bytes written
+	incr       uint32        // bytes sent since last window update
 
 	// UPD command
-	peerConsumed          uint32        // num of bytes the peer has consumed
+	peerConsumed          atomic.Uint32 // num of bytes the peer has consumed
 	peerWindow            uint32        // peer window, initialized to 256KB, updated by peer
 	chUpdate              chan struct{} // notify of remote data consuming and window update
 	windowUpdateThreshold uint32        // cached threshold for window update (MaxStreamBuffer/2)
@@ -113,10 +113,7 @@ func (r *bufferRing) len() int {
 }
 
 func (r *bufferRing) grow() {
-	newCap := len(r.bufs) * 2
-	if newCap < 1 {
-		newCap = 1
-	}
+	newCap := max(len(r.bufs)*2, 1)
 	newBufs := make([][]byte, newCap)
 	newHeads := make([]*[]byte, newCap)
 	for i := 0; i < r.size; i++ {
@@ -568,14 +565,11 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 	sent := 0
 	frame := newFrame(byte(s.sess.config.Version), cmdPSH, s.id)
 	for len(b) > 0 {
-		size := len(b)
-		if size > s.frameSize {
-			size = s.frameSize
-		}
+		size := min(len(b), s.frameSize)
 
 		frame.data = b[:size]
 		n, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
-		atomic.AddUint32(&s.numWritten, uint32(size))
+		s.numWritten.Add(uint32(size))
 		sent += n
 		if err != nil {
 			return sent, err
@@ -613,7 +607,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		// eg2: int32(uint32(0) - uint32(1)) = -1
 		//
 		// basically, you can take it as a MODULAR ARITHMETIC
-		inflight := int32(atomic.LoadUint32(&s.numWritten) - atomic.LoadUint32(&s.peerConsumed))
+		inflight := int32(s.numWritten.Load() - s.peerConsumed.Load())
 		if inflight < 0 { // security check for malformed data
 			return 0, ErrConsumed
 		}
@@ -623,24 +617,18 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 
 		if win > 0 {
 			// determine how many bytes to send
-			n := len(b)
-			if n > int(win) {
-				n = int(win)
-			}
+			n := min(len(b), int(win))
 
 			// frame split and transmit
 			bts := b[:n]
 			for len(bts) > 0 {
 				// splitting frame
-				size := len(bts)
-				if size > s.frameSize {
-					size = s.frameSize
-				}
+				size := min(len(bts), s.frameSize)
 				frame.data = bts[:size]
 
 				// transmit of frame
 				nw, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
-				atomic.AddUint32(&s.numWritten, uint32(size))
+				s.numWritten.Add(uint32(size))
 				sent += nw
 				if err != nil {
 					return sent, err
@@ -705,7 +693,7 @@ func (s *stream) CloseWrite() error {
 // Close implements net.Conn
 // Close fully closes the stream (both read and write sides).
 func (s *stream) Close() error {
-	atomic.StoreUint32(&s.forcedClose, 1)
+	s.forcedClose.Store(1)
 
 	var once bool
 	s.dieOnce.Do(func() {
@@ -775,7 +763,7 @@ func (s *stream) SetDeadline(t time.Time) error {
 
 // sessionClose closes the stream when its session shuts down.
 func (s *stream) sessionClose() {
-	atomic.StoreUint32(&s.forcedClose, 1)
+	s.forcedClose.Store(1)
 	s.dieOnce.Do(func() { close(s.die) })
 }
 
@@ -837,7 +825,7 @@ func (s *stream) wakeupWriter() {
 // update records the peer's consumed-byte count and receive-window size.
 func (s *stream) update(consumed uint32, window uint32) {
 	// update peer consumed and window size immediately
-	atomic.StoreUint32(&s.peerConsumed, consumed)
+	s.peerConsumed.Store(consumed)
 	atomic.StoreUint32(&s.peerWindow, window)
 
 	// notify write process
@@ -906,5 +894,5 @@ func (s *stream) isNormalHalfClosed() bool {
 }
 
 func (s *stream) isForcedClosed() bool {
-	return atomic.LoadUint32(&s.forcedClose) != 0
+	return s.forcedClose.Load() != 0
 }
