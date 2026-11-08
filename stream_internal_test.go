@@ -137,7 +137,7 @@ func TestSessionCloseDrainsPendingWriteRequests(t *testing.T) {
 	defer peer.Close()
 
 	sess := newSession(cfg, conn, true)
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		frame := newFrame(byte(cfg.Version), cmdPSH, 1)
 		frame.data = make([]byte, cfg.MaxFrameSize)
 		sess.shaper <- writeRequest{
@@ -193,11 +193,11 @@ type shortWriteBuffersConn struct {
 	net.Conn
 	writeN     int
 	writeErr   error
-	writeCalls int32
+	writeCalls atomic.Int32
 }
 
 func (c *shortWriteBuffersConn) WriteBuffers(v [][]byte) (int, error) {
-	atomic.AddInt32(&c.writeCalls, 1)
+	c.writeCalls.Add(1)
 	total := 0
 	for _, b := range v {
 		total += len(b)
@@ -236,7 +236,7 @@ func TestSocketWriteErrorDrainsPendingWriteRequests(t *testing.T) {
 		t.Fatal("sendLoop did not start writing")
 	}
 
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		frame := newFrame(byte(cfg.Version), cmdPSH, 1)
 		frame.data = make([]byte, cfg.MaxFrameSize)
 		sess.shaper <- writeRequest{
@@ -312,7 +312,7 @@ func TestWriteFrameInternalShortWriteFromWriteBuffersReturnsError(t *testing.T) 
 	if n < 0 || n > len(frame.data) {
 		t.Fatalf("writeFrameInternal n = %d; want within [0,%d]", n, len(frame.data))
 	}
-	if calls := atomic.LoadInt32(&wrapped.writeCalls); calls == 0 {
+	if calls := wrapped.writeCalls.Load(); calls == 0 {
 		t.Fatal("WriteBuffers was not used")
 	}
 
@@ -514,7 +514,7 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		t.Fatal("recvLoop did not read SYN header")
 	}
 
-	atomic.StoreInt32(&sess.closed, 1)
+	sess.closed.Store(1)
 	close(sess.die)
 	sess.streamLock.Unlock()
 	peer.Close()
@@ -624,7 +624,7 @@ func TestStreamRecycleTokens(t *testing.T) {
 
 func TestStreamRecycleTokensShrinksBufferRing(t *testing.T) {
 	s := newUnitTestStream()
-	for i := 0; i < defaultBufferRingCapacity*2; i++ {
+	for i := range defaultBufferRingCapacity * 2 {
 		buf := defaultAllocator.Get(1)
 		(*buf)[0] = byte(i)
 		s.pushBytes(buf)
@@ -645,7 +645,7 @@ func TestStreamUpdateNotifiesWriter(t *testing.T) {
 	s := newUnitTestStream()
 	s.update(7, 9)
 
-	if got := atomic.LoadUint32(&s.peerConsumed); got != 7 {
+	if got := s.peerConsumed.Load(); got != 7 {
 		t.Fatalf("peerConsumed mismatch: %d", got)
 	}
 	if got := atomic.LoadUint32(&s.peerWindow); got != 9 {
@@ -755,8 +755,8 @@ func TestWriteV2ClosedPipe(t *testing.T) {
 
 func TestWriteV2ConsumedError(t *testing.T) {
 	s := newUnitTestStreamV2()
-	atomic.StoreUint32(&s.peerConsumed, 10)
-	atomic.StoreUint32(&s.numWritten, 0)
+	s.peerConsumed.Store(10)
+	s.numWritten.Store(0)
 	atomic.StoreUint32(&s.peerWindow, 0)
 
 	if _, err := s.writeV2([]byte("x")); err != ErrConsumed {
@@ -801,8 +801,8 @@ func TestWriteV2CounterWraparound(t *testing.T) {
 	const transferSize = 512 << 10
 	// Model an existing transfer just below 4 GiB, then send through the wrap.
 	start := ^uint32(0) - 1023
-	atomic.StoreUint32(&clientStream.numWritten, start)
-	atomic.StoreUint32(&clientStream.peerConsumed, start)
+	clientStream.numWritten.Store(start)
+	clientStream.peerConsumed.Store(start)
 	atomic.StoreUint32(&serverStream.numRead, start)
 
 	payload := bytes.Repeat([]byte{0x5a}, transferSize)
@@ -830,20 +830,20 @@ func TestWriteV2CounterWraparound(t *testing.T) {
 	if want >= start {
 		t.Fatal("test transfer did not cross the uint32 boundary")
 	}
-	if got := atomic.LoadUint32(&clientStream.numWritten); got != want {
+	if got := clientStream.numWritten.Load(); got != want {
 		t.Fatalf("numWritten = %d; want %d", got, want)
 	}
 
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	for {
-		if got := atomic.LoadUint32(&clientStream.peerConsumed); got == want {
+		if got := clientStream.peerConsumed.Load(); got == want {
 			break
 		}
 		select {
 		case <-clientStream.chUpdate:
 		case <-timer.C:
-			t.Fatalf("peerConsumed = %d; want %d", atomic.LoadUint32(&clientStream.peerConsumed), want)
+			t.Fatalf("peerConsumed = %d; want %d", clientStream.peerConsumed.Load(), want)
 		}
 	}
 }

@@ -100,8 +100,8 @@ func TestShaperQueueFairness(t *testing.T) {
 		requestsPerStream = 16
 	)
 
-	for sid := 0; sid < streams; sid++ {
-		for seq := 0; seq < requestsPerStream; seq++ {
+	for sid := range streams {
+		for seq := range requestsPerStream {
 			sq.Push(writeRequest{
 				frame: Frame{sid: uint32(sid)},
 				seq:   uint32(seq),
@@ -109,7 +109,7 @@ func TestShaperQueueFairness(t *testing.T) {
 		}
 	}
 
-	for index := 0; index < streams*requestsPerStream; index++ {
+	for index := range streams * requestsPerStream {
 		req, ok := sq.Pop()
 		if !ok {
 			t.Fatalf("queue became empty after %d of %d pops", index, streams*requestsPerStream)
@@ -141,12 +141,12 @@ func TestShaperQueueConcurrentStress(t *testing.T) {
 	start := make(chan struct{})
 	var producers sync.WaitGroup
 	producers.Add(streams)
-	for sid := 0; sid < streams; sid++ {
+	for sid := range streams {
 		sid := sid
 		go func() {
 			defer producers.Done()
 			<-start
-			for seq := 0; seq < requestsPerStream; seq++ {
+			for seq := range requestsPerStream {
 				sq.Push(writeRequest{
 					frame: Frame{sid: uint32(sid)},
 					seq:   uint32(seq),

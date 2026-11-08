@@ -79,7 +79,7 @@ func TestBufferRingShrinksWhenDrained(t *testing.T) {
 	for _, mode := range []string{"pop", "consume"} {
 		t.Run(mode, func(t *testing.T) {
 			r := newBufferRing(defaultBufferRingCapacity)
-			for i := 0; i < defaultBufferRingCapacity*2; i++ {
+			for i := range defaultBufferRingCapacity * 2 {
 				buf := []byte{byte(i)}
 				r.push(buf, nil)
 			}
@@ -760,9 +760,9 @@ func TestWriteToV2WindowUpdateAfterDestinationError(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	for atomic.LoadUint32(&clientStream.peerConsumed) < uint32(len(payload)) {
+	for clientStream.peerConsumed.Load() < uint32(len(payload)) {
 		if time.Now().After(deadline) {
-			t.Fatalf("peer consumed = %d; want at least %d", atomic.LoadUint32(&clientStream.peerConsumed), len(payload))
+			t.Fatalf("peer consumed = %d; want at least %d", clientStream.peerConsumed.Load(), len(payload))
 		}
 		time.Sleep(time.Millisecond)
 	}

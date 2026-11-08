@@ -108,7 +108,7 @@ type Session struct {
 
 	die     chan struct{} // flag session has died
 	dieOnce sync.Once
-	closed  int32 // atomic flag for fast IsClosed check
+	closed  atomic.Int32 // atomic flag for fast IsClosed check
 
 	// socket error handling
 	socketReadError      error
@@ -125,10 +125,10 @@ type Session struct {
 
 	chAccepts chan *stream
 
-	sessionIsActive int32              // flag session is active
+	sessionIsActive atomic.Int32       // flag session is active
 	acceptDeadline  *deadline.Deadline // deadline for Accept()
 
-	requestID        uint32            // Monotonic increasing write request ID
+	requestID        atomic.Uint32     // Monotonic increasing write request ID
 	writeReqLock     sync.RWMutex      // fences write request admission during shutdown
 	shaper           chan writeRequest // a shaper for writing
 	sq               *shaperQueue
@@ -295,7 +295,7 @@ func (s *Session) closeStreams() {
 func (s *Session) Close() error {
 	var once bool
 	s.dieOnce.Do(func() {
-		atomic.StoreInt32(&s.closed, 1)
+		s.closed.Store(1)
 		close(s.die)
 		once = true
 	})
@@ -366,7 +366,7 @@ func (s *Session) notifyProtoError(err error) {
 
 // IsClosed reports whether the session has shut down.
 func (s *Session) IsClosed() bool {
-	return atomic.LoadInt32(&s.closed) != 0
+	return s.closed.Load() != 0
 }
 
 // NumStreams returns the number of currently open streams
@@ -459,7 +459,7 @@ func (s *Session) recvLoop() {
 		}
 
 		// Mark the session as active
-		atomic.StoreInt32(&s.sessionIsActive, 1)
+		s.sessionIsActive.Store(1)
 
 		// validate protocol version
 		if hdr.Version() != byte(s.config.Version) {
@@ -587,7 +587,7 @@ func (s *Session) keepalive() {
 			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
 			s.notifyBucket() // force a wakeup signal to the recvLoop
 		case <-tickerTimeout.C:
-			if !atomic.CompareAndSwapInt32(&s.sessionIsActive, 1, 0) {
+			if !s.sessionIsActive.CompareAndSwap(1, 0) {
 				// recvLoop may block while bucket is 0, in this case,
 				// session should not be closed.
 				if atomic.LoadInt32(&s.bucket) > 0 {
@@ -815,7 +815,7 @@ func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLA
 		writeRequest{
 			class:  class,
 			frame:  f,
-			seq:    atomic.AddUint32(&s.requestID, 1),
+			seq:    s.requestID.Add(1),
 			result: resultCh,
 		},
 		deadline,

@@ -145,7 +145,7 @@ func TestEcho(t *testing.T) {
 	}
 	const N = 100
 	buf := make([]byte, 10)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		msg := fmt.Sprintf("hello%v", i)
 		if n, err := stream.Write([]byte(msg)); err != nil || n != len(msg) {
 			t.Fatalf("write %q = (%d, %v); want (%d, nil)", msg, n, err, len(msg))
@@ -377,7 +377,7 @@ func TestSpeed(t *testing.T) {
 		wg.Done()
 	}()
 	msg := make([]byte, 8192)
-	for i := 0; i < 2048; i++ {
+	for range 2048 {
 		stream.Write(msg)
 	}
 	wg.Wait()
@@ -396,11 +396,11 @@ func TestParallel(t *testing.T) {
 	messages := 100
 	var wg sync.WaitGroup
 	wg.Add(par)
-	for i := 0; i < par; i++ {
+	for range par {
 		stream, _ := session.OpenStream()
 		go func(s *Stream) {
 			buf := make([]byte, 20)
-			for j := 0; j < messages; j++ {
+			for j := range messages {
 				msg := fmt.Sprintf("hello%v", j)
 				s.Write([]byte(msg))
 				if _, err := s.Read(buf); err != nil {
@@ -430,11 +430,11 @@ func TestParallelV2(t *testing.T) {
 	messages := 100
 	var wg sync.WaitGroup
 	wg.Add(par)
-	for i := 0; i < par; i++ {
+	for range par {
 		stream, _ := session.OpenStream()
 		go func(s *Stream) {
 			buf := make([]byte, 20)
-			for j := 0; j < messages; j++ {
+			for j := range messages {
 				msg := fmt.Sprintf("hello%v", j)
 				s.Write([]byte(msg))
 				if _, err := s.Read(buf); err != nil {
@@ -502,7 +502,7 @@ func TestConcurrentClose(t *testing.T) {
 	streams := make([]*Stream, 0, numStreams)
 	var wg sync.WaitGroup
 	wg.Add(numStreams)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		stream, _ := session.OpenStream()
 		streams = append(streams, stream)
 	}
@@ -529,7 +529,7 @@ func TestTinyReadBuffer(t *testing.T) {
 	tinybuf := make([]byte, 6)
 	var sent strings.Builder
 	var received strings.Builder
-	for i := 0; i < N; i++ {
+	for i := range N {
 		msg := fmt.Sprintf("hello%v", i)
 		sent.WriteString(msg)
 		nsent, err := stream.Write([]byte(msg))
@@ -654,7 +654,7 @@ func TestServerEcho(t *testing.T) {
 				return err
 			}
 			defer stream.Close()
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				msg := fmt.Sprintf("hello%v", i)
 				stream.Write([]byte(msg))
 				n, err := stream.Read(buf)
@@ -704,7 +704,7 @@ func TestSendWithoutRecv(t *testing.T) {
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
 	const N = 100
-	for i := 0; i < N; i++ {
+	for i := range N {
 		msg := fmt.Sprintf("hello%v", i)
 		stream.Write([]byte(msg))
 	}
@@ -789,7 +789,7 @@ func TestRandomFrame(t *testing.T) {
 	defer stop()
 	// pure random
 	session, _ := Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		rnd := make([]byte, rand.Uint32()%1024)
 		io.ReadFull(crand.Reader, rnd)
 		session.conn.Write(rnd)
@@ -802,7 +802,7 @@ func TestRandomFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, cmdSYN, 1000)
 		session.writeControlFrame(f)
 	}
@@ -815,7 +815,7 @@ func TestRandomFrame(t *testing.T) {
 	}
 	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 		session.writeControlFrame(f)
 	}
@@ -827,7 +827,7 @@ func TestRandomFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
 		session.writeControlFrame(f)
 	}
@@ -839,7 +839,7 @@ func TestRandomFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
 		f.ver = byte(rand.Uint32())
 		session.writeControlFrame(f)
@@ -876,7 +876,7 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	//close first
 	session.Close()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
 		session.writeControlFrame(f)
 	}
@@ -890,7 +890,7 @@ func TestWriteFrameInternal(t *testing.T) {
 	defer stop()
 	// pure random
 	session, _ := Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		rnd := make([]byte, rand.Uint32()%1024)
 		io.ReadFull(crand.Reader, rnd)
 		session.conn.Write(rnd)
@@ -905,7 +905,7 @@ func TestWriteFrameInternal(t *testing.T) {
 	session, _ = Client(cli, nil)
 	//close first
 	session.Close()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, byte(rand.Uint32()), rand.Uint32())
 
 		timer := time.NewTimer(session.config.KeepAliveTimeout)
@@ -921,7 +921,7 @@ func TestWriteFrameInternal(t *testing.T) {
 	}
 	allcmds := []byte{cmdSYN, cmdFIN, cmdPSH, cmdNOP}
 	session, _ = Client(cli, nil)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		f := newFrame(1, allcmds[rand.Int()%len(allcmds)], rand.Uint32())
 
 		timer := time.NewTimer(session.config.KeepAliveTimeout)
@@ -977,7 +977,7 @@ func TestReadDeadline(t *testing.T) {
 	const N = 100
 	buf := make([]byte, 10)
 	var readErr error
-	for i := 0; i < N; i++ {
+	for range N {
 		stream.SetReadDeadline(time.Now().Add(-1 * time.Minute))
 		if _, readErr = stream.Read(buf); readErr != nil {
 			break
@@ -1189,7 +1189,7 @@ func testRandomLength(t *testing.T, stream *Stream, N int64) {
 				t.Fatalf("Rand read error: %v", err)
 			}
 			if !bytes.Equal(buf[:n], expbuf[:n]) {
-				for i := 0; i < n; i++ {
+				for i := range n {
 					if buf[i] != expbuf[i] {
 						_ = stream.Close()
 						result := <-writerDone
@@ -1550,10 +1550,10 @@ func TestSessionCloseChan(t *testing.T) {
 // countingWriter counts the bytes written to it. Used by
 // TestAcceptStreamNoCloseFinalizer to observe how much of an accepted stream
 // io.Copy managed to drain.
-type countingWriter struct{ n int64 }
+type countingWriter struct{ n atomic.Int64 }
 
 func (w *countingWriter) Write(p []byte) (int, error) {
-	atomic.AddInt64(&w.n, int64(len(p)))
+	w.n.Add(int64(len(p)))
 	return len(p), nil
 }
 
@@ -1637,11 +1637,11 @@ func TestAcceptStreamNoCloseFinalizer(t *testing.T) {
 	}()
 
 	deadline := time.After(30 * time.Second)
-	for atomic.LoadInt64(&cw.n) < N {
+	for cw.n.Load() < N {
 		select {
 		case <-deadline:
 			t.Fatalf("server drained only %d of %d bytes from the accepted stream; "+
-				"the AcceptStream finalizer closed it mid-transfer (#116)", atomic.LoadInt64(&cw.n), N)
+				"the AcceptStream finalizer closed it mid-transfer (#116)", cw.n.Load(), N)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
