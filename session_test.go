@@ -991,6 +991,7 @@ func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
 
 	var wire []byte
 	wire = appendFrame(wire, cmdSYN, 1, nil)
+	wire = appendFrame(wire, cmdPSH, 1, []byte("valid data"))
 	wire = appendFrame(wire, cmdFIN, 1, nil)
 	wire = appendFrame(wire, cmdPSH, 1, []byte("must be discarded"))
 	wire = appendFrame(wire, cmdSYN, 3, nil)
@@ -1009,9 +1010,13 @@ func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if got, want := atomic.LoadInt32(&session.bucket), int32(config.MaxReceiveBuffer-len("valid data")); got != want {
+		t.Fatalf("receive bucket before read = %d; want %d", got, want)
+	}
+
 	buf := make([]byte, 64)
-	if n, err := stream.Read(buf); n != 0 || err != io.EOF {
-		t.Fatalf("Read after FIN = (%d, %v); want (0, EOF)", n, err)
+	if n, err := stream.Read(buf); err != nil || string(buf[:n]) != "valid data" {
+		t.Fatalf("Read before FIN = (%d, %q, %v); want (%d, %q, nil)", n, buf[:n], err, len("valid data"), "valid data")
 	}
 
 	stream.bufferLock.Lock()
@@ -1019,6 +1024,10 @@ func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
 	stream.bufferLock.Unlock()
 	if buffered != 0 {
 		t.Fatalf("FIN-following data left %d buffers queued", buffered)
+	}
+
+	if n, err := stream.Read(buf); n != 0 || err != io.EOF {
+		t.Fatalf("Read after FIN = (%d, %v); want (0, EOF)", n, err)
 	}
 	if got := atomic.LoadInt32(&session.bucket); got != int32(config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, config.MaxReceiveBuffer)

@@ -539,21 +539,22 @@ func (s *Session) recvLoop() {
 
 			// Queue the payload on its target stream.
 			s.streamLock.Lock()
-			queued := false
+			buffered := false
 			if stream, ok := s.streams[sid]; ok {
 				select {
 				case <-stream.chFinEvent:
 					// Ignore data sent after the peer closed its write side.
 				default:
 					stream.pushBytes(pNewbuf)
-					// Account for the payload against the shared receive capacity.
+					// Tokens are charged only while payload is buffered; reads
+					// and stream cleanup return them to the shared bucket.
 					atomic.AddInt32(&s.bucket, -int32(written))
 					stream.wakeupReader()
-					queued = true
+					buffered = true
 				}
 			}
-			if !queued {
-				// Discard data for an unknown stream and return its buffer.
+			if !buffered {
+				// Dropped payloads were never charged to the token bucket.
 				defaultAllocator.Put(pNewbuf)
 			}
 			s.streamLock.Unlock()
