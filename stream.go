@@ -58,6 +58,8 @@ type stream struct {
 	dieOnce     sync.Once     // Ensures die channel is closed only once
 	forcedClose atomic.Uint32 // Set when Close or Session.Close aborts the stream.
 
+	v2WriteLock sync.Mutex // Serializes v2 window reservations between writers.
+
 	// to handle FIN event(i.e. EOF from remote)
 	chFinEvent   chan struct{}
 	finEventOnce sync.Once // Ensures chFinEvent is closed only once
@@ -575,8 +577,8 @@ func (s *stream) writeV1(b []byte) (n int, err error) {
 		size := min(len(b), s.frameSize)
 
 		frame.data = b[:size]
-		n, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 		s.numWritten.Add(uint32(size))
+		n, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 		sent += n
 		if err != nil {
 			return sent, err
@@ -599,6 +601,8 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 	if err := s.checkWriteClosed(); err != nil {
 		return 0, err
 	}
+	s.v2WriteLock.Lock()
+	defer s.v2WriteLock.Unlock()
 
 	// Split the input into frames, respecting the peer's receive window.
 	sent := 0
@@ -633,9 +637,8 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 				size := min(len(bts), s.frameSize)
 				frame.data = bts[:size]
 
-				// Send the frame before advancing the written-byte count.
-				nw, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 				s.numWritten.Add(uint32(size))
+				nw, err := writeFrameInternal(s.sess, frame, s.writeDeadline.Done(), CLSDATA)
 				sent += nw
 				if err != nil {
 					return sent, err

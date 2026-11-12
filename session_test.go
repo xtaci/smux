@@ -966,6 +966,65 @@ func TestWriteFrameInternal(t *testing.T) {
 	}
 }
 
+func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
+	serverConn, peerConn := net.Pipe()
+	config := DefaultConfig()
+	config.KeepAliveDisabled = true
+	session, err := Server(serverConn, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	defer peerConn.Close()
+
+	appendFrame := func(dst []byte, cmd byte, sid uint32, payload []byte) []byte {
+		start := len(dst)
+		dst = append(dst, make([]byte, headerSize+len(payload))...)
+		header := dst[start:]
+		header[0] = byte(config.Version)
+		header[1] = cmd
+		binary.LittleEndian.PutUint16(header[2:], uint16(len(payload)))
+		binary.LittleEndian.PutUint32(header[4:], sid)
+		copy(header[headerSize:], payload)
+		return dst
+	}
+
+	var wire []byte
+	wire = appendFrame(wire, cmdSYN, 1, nil)
+	wire = appendFrame(wire, cmdFIN, 1, nil)
+	wire = appendFrame(wire, cmdPSH, 1, []byte("must be discarded"))
+	wire = appendFrame(wire, cmdSYN, 3, nil)
+	if _, err := peerConn.Write(wire); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := session.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := session.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.AcceptStream(); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, 64)
+	if n, err := stream.Read(buf); n != 0 || err != io.EOF {
+		t.Fatalf("Read after FIN = (%d, %v); want (0, EOF)", n, err)
+	}
+
+	stream.bufferLock.Lock()
+	buffered := stream.bufferRing.len()
+	stream.bufferLock.Unlock()
+	if buffered != 0 {
+		t.Fatalf("FIN-following data left %d buffers queued", buffered)
+	}
+	if got := atomic.LoadInt32(&session.bucket); got != int32(config.MaxReceiveBuffer) {
+		t.Fatalf("receive bucket = %d; want %d", got, config.MaxReceiveBuffer)
+	}
+}
+
 func TestReadDeadline(t *testing.T) {
 	_, stop, cli, err := setupServer(t)
 	if err != nil {
