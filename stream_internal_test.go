@@ -104,11 +104,11 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	defer peer.Close()
 	s.sess.conn = conn
 	s.sess.done = make(chan struct{})
-	s.sess.chAccepts = make(chan *stream, 1)
+	s.sess.acceptCh = make(chan *stream, 1)
 	s.sess.bucket.Add(int32(s.sess.config.MaxReceiveBuffer))
-	s.sess.chAccepts <- s
-	s.sess.chShaperDone = make(chan struct{})
-	close(s.sess.chShaperDone)
+	s.sess.acceptCh <- s
+	s.sess.shaperDone = make(chan struct{})
+	close(s.sess.shaperDone)
 
 	buf := malloc(6)
 	copy(*buf, "abcdef")
@@ -128,8 +128,8 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	if len(s.sess.streams) != 0 {
 		t.Fatalf("session close left %d streams", len(s.sess.streams))
 	}
-	if len(s.sess.chAccepts) != 0 {
-		t.Fatalf("session close left %d pending accepts", len(s.sess.chAccepts))
+	if len(s.sess.acceptCh) != 0 {
+		t.Fatalf("session close left %d pending accepts", len(s.sess.acceptCh))
 	}
 	if got := s.sess.bucket.Load(); got != int32(s.sess.config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, s.sess.config.MaxReceiveBuffer)
@@ -254,7 +254,7 @@ func TestSocketWriteErrorDrainsPendingWriteRequests(t *testing.T) {
 	close(release)
 
 	select {
-	case <-sess.chShaperDone:
+	case <-sess.shaperDone:
 	case <-time.After(time.Second):
 		t.Fatal("shaperLoop did not stop after the socket write error")
 	}
@@ -290,7 +290,7 @@ func TestWriteFrameInternalShortWriteReturnsError(t *testing.T) {
 	}
 
 	select {
-	case <-sess.chSocketWriteError:
+	case <-sess.writeDone:
 	case <-time.After(time.Second):
 		t.Fatal("short write did not notify socket write error")
 	}
@@ -323,7 +323,7 @@ func TestWriteFrameInternalShortWriteFromWriteBuffersReturnsError(t *testing.T) 
 	}
 
 	select {
-	case <-sess.chSocketWriteError:
+	case <-sess.writeDone:
 	case <-time.After(time.Second):
 		t.Fatal("short WriteBuffers did not notify socket write error")
 	}
@@ -406,13 +406,13 @@ func stopTimer(t *time.Timer) {
 func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T) {
 	cfg := DefaultConfig()
 	sess := &Session{
-		config:             cfg,
-		shaper:             make(chan writeRequest, 1),
-		sq:                 NewShaperQueue(),
-		done:               make(chan struct{}),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		activeCall:         libsync.NewQuit(),
+		config:     cfg,
+		shaper:     make(chan writeRequest, 1),
+		sq:         NewShaperQueue(),
+		done:       make(chan struct{}),
+		readDone:   make(chan struct{}),
+		writeDone:  make(chan struct{}),
+		activeCall: libsync.NewQuit(),
 	}
 
 	deadline := time.NewTimer(5 * time.Second)
@@ -454,14 +454,14 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 	defer peer.Close()
 
 	sess := &Session{
-		conn:               conn,
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		bucketNotify:       make(chan struct{}, 1),
-		done:               make(chan struct{}),
-		chAccepts:          make(chan *stream, 1),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
+		conn:         conn,
+		config:       cfg,
+		streams:      make(map[uint32]*stream),
+		bucketNotify: make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		acceptCh:     make(chan *stream, 1),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
 	}
 	sess.bucket.Store(int32(cfg.MaxReceiveBuffer))
 	recvDone := make(chan struct{})
@@ -507,20 +507,20 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 	if len(sess.streams) != 0 {
 		t.Fatalf("closed session retained %d streams", len(sess.streams))
 	}
-	if len(sess.chAccepts) != 0 {
-		t.Fatalf("closed session retained %d pending accepts", len(sess.chAccepts))
+	if len(sess.acceptCh) != 0 {
+		t.Fatalf("closed session retained %d pending accepts", len(sess.acceptCh))
 	}
 }
 
 func newUnitTestStream() *stream {
 	cfg := DefaultConfig()
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
-		activeCall:         libsync.NewQuit(),
+		config:       cfg,
+		streams:      make(map[uint32]*stream),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		activeCall:   libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	sess.streams[st.id] = st
@@ -673,14 +673,14 @@ func TestStreamWaitReadClosed(t *testing.T) {
 func TestSendWindowUpdateTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
-		shaper:             nil,
-		done:               make(chan struct{}),
-		activeCall:         libsync.NewQuit(),
+		config:       cfg,
+		streams:      make(map[uint32]*stream),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		shaper:       nil,
+		done:         make(chan struct{}),
+		activeCall:   libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	st.readDeadline.Set(time.Now().Add(-time.Second))
@@ -712,12 +712,12 @@ func newUnitTestStreamV2() *stream {
 	cfg := DefaultConfig()
 	cfg.Version = 2
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
-		done:               make(chan struct{}),
+		config:       cfg,
+		streams:      make(map[uint32]*stream),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	sess.streams[st.id] = st

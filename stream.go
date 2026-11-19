@@ -560,8 +560,8 @@ func (s *stream) waitRead() error {
 			return nil
 		}
 		return io.EOF
-	case <-s.sess.chSocketReadError:
-		return s.sess.socketReadError
+	case <-s.sess.readDone:
+		return s.sess.readErr
 	case <-s.readDeadline.Done():
 		return ErrTimeout
 	case <-s.done:
@@ -714,8 +714,8 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 			return sent, io.ErrClosedPipe
 		case <-s.writeDeadline.Done():
 			return sent, ErrTimeout
-		case <-s.sess.chSocketWriteError:
-			return sent, s.sess.socketWriteError
+		case <-s.sess.writeDone:
+			return sent, s.sess.writeErr
 		case <-s.chUpdate: // The peer consumed data or updated its receive window.
 			continue
 		}
