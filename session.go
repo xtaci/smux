@@ -111,9 +111,8 @@ type Session struct {
 	streams    map[uint32]*stream // all streams in this session
 	streamLock sync.Mutex         // locks streams
 
-	die     chan struct{} // flag session has died
-	dieOnce sync.Once
-	closed  atomic.Int32 // atomic flag for fast IsClosed check
+	done   chan struct{} // flag session has died
+	closed atomic.Bool   // fast IsClosed check
 
 	// socket error handling
 	socketReadError      error
@@ -145,7 +144,7 @@ type Session struct {
 // newSession creates a session and starts its background processing loops.
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
-	s.die = make(chan struct{})
+	s.done = make(chan struct{})
 	s.conn = conn
 	s.config = config
 	s.streams = make(map[uint32]*stream)
@@ -226,7 +225,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 		err = s.socketReadError
 	case <-s.chSocketWriteError:
 		err = s.socketWriteError
-	case <-s.die:
+	case <-s.done:
 		err = io.ErrClosedPipe
 	default:
 		wrapper := &Stream{stream: stream}
@@ -275,7 +274,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, s.socketReadError
 	case <-s.chProtoError:
 		return nil, s.protoError
-	case <-s.die:
+	case <-s.done:
 		return nil, io.ErrClosedPipe
 	}
 }
@@ -301,16 +300,11 @@ func (s *Session) closeStreams() {
 
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
-	var once bool
-	s.dieOnce.Do(func() {
-		s.closed.Store(1)
-		close(s.die)
-		once = true
-	})
-
-	if !once {
+	if s.closed.Swap(true) {
 		return io.ErrClosedPipe
 	}
+
+	close(s.done)
 
 	// Wait for in-flight admissions to finish before the shaper drains its queues.
 	s.writeReqLock.Lock()
@@ -341,7 +335,7 @@ func (s *Session) drainAccepts() {
 
 // CloseChan returns a channel that is closed when the session shuts down.
 func (s *Session) CloseChan() <-chan struct{} {
-	return s.die
+	return s.done
 }
 
 // notifyBucket wakes recvLoop after receive-buffer capacity becomes available.
@@ -378,7 +372,7 @@ func (s *Session) notifyProtoError(err error) {
 
 // IsClosed reports whether the session has shut down.
 func (s *Session) IsClosed() bool {
-	return s.closed.Load() != 0
+	return s.closed.Load()
 }
 
 // NumStreams returns the number of streams currently registered in the session.
@@ -454,7 +448,7 @@ func (s *Session) recvLoop() {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
 			select {
 			case <-s.bucketNotify:
-			case <-s.die:
+			case <-s.done:
 				// With no receive capacity, shutdown wakes this wait directly.
 				// A shutdown during io.ReadFull instead surfaces as a read error.
 				return
@@ -504,7 +498,7 @@ func (s *Session) recvLoop() {
 			if accepted != nil {
 				select {
 				case s.chAccepts <- accepted:
-				case <-s.die:
+				case <-s.done:
 					return
 				}
 				if s.IsClosed() {
@@ -614,7 +608,7 @@ func (s *Session) keepalive() {
 					return
 				}
 			}
-		case <-s.die:
+		case <-s.done:
 			return
 		}
 	}
@@ -640,7 +634,7 @@ func (s *Session) shaperLoop() {
 
 	for {
 		select {
-		case <-s.die:
+		case <-s.done:
 			return
 		case <-s.chSocketWriteError:
 			return
@@ -738,7 +732,7 @@ func (s *Session) sendLoop() {
 EVENT_LOOP:
 	for {
 		select {
-		case <-s.die:
+		case <-s.done:
 			return
 		case <-s.chShaperPending:
 			for {
@@ -817,7 +811,7 @@ func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) er
 	select {
 	case s.shaper <- req:
 		return nil
-	case <-s.die:
+	case <-s.done:
 		return io.ErrClosedPipe
 	case <-s.chSocketWriteError:
 		return s.socketWriteError
@@ -848,7 +842,7 @@ func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLA
 	select {
 	case result := <-resultCh:
 		n, err = result.n, result.err
-	case <-s.die:
+	case <-s.done:
 		// sendLoop may still deliver this request's result; keep the channel
 		// out of the pool to prevent another request from reusing it.
 		return 0, io.ErrClosedPipe

@@ -515,7 +515,7 @@ func TestHalfClosePreservesUnreadData(t *testing.T) {
 								t.Fatal("timed out waiting for peer FIN")
 							}
 							select {
-							case <-serverStream.die:
+							case <-serverStream.done:
 							case <-time.After(5 * time.Second):
 								t.Fatal("timed out waiting for half-close cleanup")
 							}

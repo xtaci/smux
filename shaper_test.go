@@ -142,7 +142,6 @@ func TestShaperQueueConcurrentStress(t *testing.T) {
 	var producers sync.WaitGroup
 	producers.Add(streams)
 	for sid := range streams {
-		sid := sid
 		go func() {
 			defer producers.Done()
 			<-start

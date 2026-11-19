@@ -54,9 +54,9 @@ type stream struct {
 	chWriterWakeup chan struct{}
 
 	// stream closing
-	die         chan struct{}
-	dieOnce     sync.Once     // Ensures die channel is closed only once
-	forcedClose atomic.Uint32 // Set when Close or Session.Close aborts the stream.
+	done        chan struct{}
+	isClosed    atomic.Bool // Ensures done channel is closed only once
+	forcedClose atomic.Bool // Set when Close or Session.Close aborts the stream.
 
 	v2WriteLock sync.Mutex // Serializes v2 window reservations between writers.
 
@@ -203,7 +203,7 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.chUpdate = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
-	s.die = make(chan struct{})
+	s.done = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
 	s.chWriteClosed = make(chan struct{})                             // Signals local write-side closure.
 	s.peerWindow = initialPeerWindow                                  // Initial peer receive window.
@@ -303,7 +303,7 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 
 	// Deliver buffered data before reporting EOF or a forced-close error.
 	select {
-	case <-s.die:
+	case <-s.done:
 		if s.isForcedClosed() {
 			return 0, io.ErrClosedPipe
 		}
@@ -366,7 +366,7 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 	}
 
 	select {
-	case <-s.die:
+	case <-s.done:
 		if s.isForcedClosed() {
 			return 0, io.ErrClosedPipe
 		}
@@ -566,7 +566,7 @@ func (s *stream) waitRead() error {
 		return s.sess.protoError
 	case <-s.readDeadline.Done():
 		return ErrTimeout
-	case <-s.die:
+	case <-s.done:
 		if s.isNormalHalfClosed() {
 			s.bufferLock.Lock()
 			drained := s.bufferRing.len() == 0
@@ -586,7 +586,7 @@ func (s *stream) checkWriteClosed() error {
 	select {
 	case <-s.chWriteClosed: // The local write side was closed.
 		return io.ErrClosedPipe
-	case <-s.die: // The stream was fully closed.
+	case <-s.done: // The stream was fully closed.
 		return io.ErrClosedPipe
 	case <-s.writeDeadline.Done():
 		return ErrTimeout
@@ -711,7 +711,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		case <-s.chWriterWakeup: // The stream's writable state may have changed.
 		case <-s.chWriteClosed: // The local write side was half-closed.
 			return sent, io.ErrClosedPipe
-		case <-s.die:
+		case <-s.done:
 			return sent, io.ErrClosedPipe
 		case <-s.writeDeadline.Done():
 			return sent, ErrTimeout
@@ -752,21 +752,17 @@ func (s *stream) CloseWrite() error {
 // Close implements net.Conn
 // Close fully closes the stream (both read and write sides).
 func (s *stream) Close() error {
-	s.forcedClose.Store(1)
+	s.forcedClose.Store(true)
 
-	var once bool
-	s.dieOnce.Do(func() {
-		close(s.die)
-		once = true
-	})
-
-	if !once {
-		// Half-close cleanup may have closed die while unread data kept the
+	if s.isClosed.Swap(true) {
+		// Half-close cleanup may have closed done while unread data kept the
 		// stream registered. An explicit Close discards that data, so remove
 		// the stream and reclaim its buffers now.
 		s.sess.streamClosed(s.id)
 		return io.ErrClosedPipe
 	}
+
+	close(s.done)
 
 	// Mark the local write side closed if it has not already been closed.
 	s.writeClosedOnce.Do(func() {
@@ -786,7 +782,7 @@ func (s *stream) Close() error {
 
 // GetDieCh returns a channel that is closed when the stream is closed.
 func (s *stream) GetDieCh() <-chan struct{} {
-	return s.die
+	return s.done
 }
 
 // SetReadDeadline sets the read deadline as defined by
@@ -822,8 +818,11 @@ func (s *stream) SetDeadline(t time.Time) error {
 
 // sessionClose closes the stream when its session shuts down.
 func (s *stream) sessionClose() {
-	s.forcedClose.Store(1)
-	s.dieOnce.Do(func() { close(s.die) })
+	s.forcedClose.Store(true)
+	if s.isClosed.Swap(true) {
+		return
+	}
+	close(s.done)
 }
 
 // LocalAddr returns the underlying connection's local address, if available.
@@ -917,11 +916,11 @@ func (s *stream) tryHalfCloseCleanup() {
 		return
 	}
 
-	s.dieOnce.Do(func() {
-		close(s.die)
-	})
+	if !s.isClosed.Swap(true) {
+		close(s.done)
+	}
 
-	// Closing die wakes readers so they can observe EOF, but must not discard
+	// Closing done wakes readers so they can observe EOF, but must not discard
 	// bytes that recvLoop queued before the peer's FIN. Keep the stream in the
 	// session map until those bytes are consumed; streamClosed recycles any
 	// remainder, so it is safe to call only after the ring is empty.
@@ -957,5 +956,5 @@ func (s *stream) isNormalHalfClosed() bool {
 
 // isForcedClosed reports whether the stream was closed explicitly or by its session.
 func (s *stream) isForcedClosed() bool {
-	return s.forcedClose.Load() != 0
+	return s.forcedClose.Load()
 }

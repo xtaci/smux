@@ -99,7 +99,7 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	s.sess.conn = conn
-	s.sess.die = make(chan struct{})
+	s.sess.done = make(chan struct{})
 	s.sess.chAccepts = make(chan *stream, 1)
 	atomic.StoreInt32(&s.sess.bucket, int32(s.sess.config.MaxReceiveBuffer))
 	s.sess.chAccepts <- s
@@ -431,7 +431,7 @@ func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T)
 		config:             cfg,
 		shaper:             make(chan writeRequest, 1),
 		sq:                 NewShaperQueue(),
-		die:                make(chan struct{}),
+		done:               make(chan struct{}),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
 		chProtoError:       make(chan struct{}),
@@ -481,7 +481,7 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		streams:            make(map[uint32]*stream),
 		bucket:             int32(cfg.MaxReceiveBuffer),
 		bucketNotify:       make(chan struct{}, 1),
-		die:                make(chan struct{}),
+		done:               make(chan struct{}),
 		chAccepts:          make(chan *stream, 1),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
@@ -514,8 +514,8 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		t.Fatal("recvLoop did not read SYN header")
 	}
 
-	sess.closed.Store(1)
-	close(sess.die)
+	sess.closed.Store(true)
+	close(sess.done)
 	sess.streamLock.Unlock()
 	peer.Close()
 
@@ -683,7 +683,7 @@ func TestStreamSetDeadlineWakesUp(t *testing.T) {
 
 func TestStreamWaitReadClosed(t *testing.T) {
 	s := newUnitTestStream()
-	close(s.die)
+	close(s.done)
 	if err := s.waitRead(); err != io.ErrClosedPipe {
 		t.Fatalf("expected io.ErrClosedPipe, got %v", err)
 	}
@@ -699,7 +699,7 @@ func TestSendWindowUpdateTimeout(t *testing.T) {
 		chProtoError:       make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
 		shaper:             nil,
-		die:                make(chan struct{}),
+		done:               make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	st.readDeadline.Set(time.Now().Add(-time.Second))
@@ -737,7 +737,7 @@ func newUnitTestStreamV2() *stream {
 		chSocketWriteError: make(chan struct{}),
 		chProtoError:       make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
-		die:                make(chan struct{}),
+		done:               make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	sess.streams[st.id] = st
