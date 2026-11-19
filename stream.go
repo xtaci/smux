@@ -289,7 +289,7 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 	s.bufferLock.Unlock()
 
 	if recycled != nil {
-		defaultAllocator.Put(recycled)
+		free(recycled)
 	}
 
 	// Return shared receive capacity so recvLoop can accept more data.
@@ -347,7 +347,7 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 	s.bufferLock.Unlock()
 
 	if recycled != nil {
-		defaultAllocator.Put(recycled)
+		free(recycled)
 	}
 
 	if n > 0 {
@@ -412,7 +412,7 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 			nw, ew := w.Write(buf)
 			// WriteTo consumes receive data just like Read, so return its tokens.
 			s.sess.returnTokens(len(buf))
-			defaultAllocator.Put(head)
+			free(head)
 			if nw > 0 {
 				n += int64(nw)
 			}
@@ -486,7 +486,7 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 			nw, ew := w.Write(buf)
 			// WriteTo consumes receive data just like Read, so return its tokens.
 			s.sess.returnTokens(len(buf))
-			defaultAllocator.Put(head)
+			free(head)
 			if nw > 0 {
 				n += int64(nw)
 			}
@@ -854,7 +854,7 @@ func (s *stream) recycleTokens() (n int) {
 	for s.bufferRing.len() > 0 {
 		buf, head, _ := s.bufferRing.pop()
 		n += len(buf)
-		defaultAllocator.Put(head)
+		free(head)
 	}
 	return
 }

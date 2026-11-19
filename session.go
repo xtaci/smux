@@ -525,13 +525,13 @@ func (s *Session) recvLoop() {
 			}
 
 			// Read the complete payload before dispatching the frame.
-			pNewbuf := defaultAllocator.Get(int(hdr.Length()))
+			pNewbuf := malloc(int(hdr.Length()))
 			written, err := io.ReadFull(s.conn, *pNewbuf)
 			if err != nil {
 				s.notifyReadError(err)
 
 				// Return the buffer because it cannot be queued.
-				defaultAllocator.Put(pNewbuf)
+				free(pNewbuf)
 				return
 			}
 
@@ -551,7 +551,7 @@ func (s *Session) recvLoop() {
 			}
 			if !buffered {
 				// Dropped payloads were never charged to the token bucket.
-				defaultAllocator.Put(pNewbuf)
+				free(pNewbuf)
 			}
 			s.streamLock.Unlock()
 

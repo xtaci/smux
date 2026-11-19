@@ -30,7 +30,7 @@ func TestStreamWriteToShortWrite(t *testing.T) {
 				s.sess.config.Version = version
 				// Bound the wait if WriteTo incorrectly continues after the short write.
 				s.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				buf := defaultAllocator.Get(6)
+				buf := malloc(6)
 				copy(*buf, "abcdef")
 				s.pushBytes(buf)
 				s.fin()
@@ -106,7 +106,7 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	atomic.StoreInt32(&s.sess.bucket, int32(s.sess.config.MaxReceiveBuffer))
 	s.sess.chAccepts <- s
 
-	buf := defaultAllocator.Get(6)
+	buf := malloc(6)
 	copy(*buf, "abcdef")
 	s.pushBytes(buf)
 	atomic.AddInt32(&s.sess.bucket, -6)
@@ -631,7 +631,7 @@ func TestStreamRecycleTokens(t *testing.T) {
 func TestStreamRecycleTokensShrinksBufferRing(t *testing.T) {
 	s := newUnitTestStream()
 	for i := range defaultBufferRingCapacity * 2 {
-		buf := defaultAllocator.Get(1)
+		buf := malloc(1)
 		(*buf)[0] = byte(i)
 		s.pushBytes(buf)
 	}
