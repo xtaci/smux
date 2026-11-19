@@ -570,14 +570,18 @@ func (s *Session) keepalive() {
 			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
 			s.notifyBucket() // Wake recvLoop in case it is waiting for capacity.
 		case <-tickerTimeout.C:
-			if !s.sessionIsActive.CompareAndSwap(1, 0) {
-				// Do not time out while recvLoop is paused because the shared
-				// receive buffer is full.
-				if s.bucket.Load() > 0 {
-					s.Close()
-					return
-				}
+			if s.sessionIsActive.CompareAndSwap(1, 0) {
+				continue
 			}
+
+			// Do not time out while recvLoop is paused because the shared
+			// receive buffer is full.
+			if s.bucket.Load() <= 0 {
+				continue
+			}
+
+			s.Close()
+			return
 		case <-s.done:
 			return
 		}

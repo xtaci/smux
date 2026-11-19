@@ -65,20 +65,21 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn, nil)
 	for {
-		if stream, err := session.AcceptStream(); err == nil {
-			go func(s io.ReadWriteCloser) {
-				buf := make([]byte, 65536)
-				for {
-					n, err := s.Read(buf)
-					if err != nil {
-						return
-					}
-					s.Write(buf[:n])
-				}
-			}(stream)
-		} else {
+		stream, err := session.AcceptStream()
+		if err != nil {
 			return
 		}
+
+		go func(s *Stream) {
+			buf := make([]byte, 65536)
+			for {
+				n, err := s.Read(buf)
+				if err != nil {
+					return
+				}
+				s.Write(buf[:n])
+			}
+		}(stream)
 	}
 }
 
@@ -111,20 +112,21 @@ func handleConnectionV2(conn net.Conn) {
 	config.Version = 2
 	session, _ := Server(conn, config)
 	for {
-		if stream, err := session.AcceptStream(); err == nil {
-			go func(s io.ReadWriteCloser) {
-				buf := make([]byte, 65536)
-				for {
-					n, err := s.Read(buf)
-					if err != nil {
-						return
-					}
-					s.Write(buf[:n])
-				}
-			}(stream)
-		} else {
+		stream, err := session.AcceptStream()
+		if err != nil {
 			return
 		}
+
+		go func(s *Stream) {
+			buf := make([]byte, 65536)
+			for {
+				n, err := s.Read(buf)
+				if err != nil {
+					return
+				}
+				s.Write(buf[:n])
+			}
+		}(stream)
 	}
 }
 

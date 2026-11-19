@@ -240,10 +240,10 @@ func (s *stream) Read(b []byte) (n int, err error) {
 			switch err {
 			case nil:
 			case io.ErrClosedPipe:
-				if s.isNormalHalfClosed() {
-					continue
+				if !s.isNormalHalfClosed() {
+					return
 				}
-				return
+
 			default:
 				return
 			}
@@ -260,10 +260,10 @@ func (s *stream) Read(b []byte) (n int, err error) {
 		switch err {
 		case nil:
 		case io.ErrClosedPipe:
-			if s.isNormalHalfClosed() {
-				continue
+			if !s.isNormalHalfClosed() {
+				return
 			}
-			return
+
 		default:
 			return
 		}
@@ -565,16 +565,17 @@ func (s *stream) waitRead() error {
 	case <-s.readDeadline.Done():
 		return ErrTimeout
 	case <-s.done:
-		if s.isNormalHalfClosed() {
-			s.bufferLock.Lock()
-			drained := s.bufferRing.len() == 0
-			s.bufferLock.Unlock()
-			if drained {
-				return io.EOF
-			}
-			return nil
+		if !s.isNormalHalfClosed() {
+			return io.ErrClosedPipe
 		}
-		return io.ErrClosedPipe
+
+		s.bufferLock.Lock()
+		defer s.bufferLock.Unlock()
+
+		if s.bufferRing.len() == 0 {
+			return io.EOF
+		}
+		return nil
 	}
 
 }
