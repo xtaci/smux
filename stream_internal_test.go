@@ -67,7 +67,9 @@ func TestStreamWriteToReturnsForcedClose(t *testing.T) {
 			s := newUnitTestStream()
 			s.sess.config.Version = version
 			s.fin()
-			s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+			if !s.isWriteClosed.Swap(true) {
+				close(s.writeDone)
+			}
 			s.tryHalfCloseCleanup()
 			if err := s.Close(); err != io.ErrClosedPipe {
 				t.Fatalf("Close error = %v; want %v", err, io.ErrClosedPipe)
@@ -587,7 +589,9 @@ func TestStreamWaitReadHalfCloseWithBufferedData(t *testing.T) {
 	s.pushBytes(&buf)
 
 	s.fin()
-	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	if !s.isWriteClosed.Swap(true) {
+		close(s.writeDone)
+	}
 	s.tryHalfCloseCleanup()
 
 	if err := s.waitRead(); err != nil {
@@ -598,7 +602,9 @@ func TestStreamWaitReadHalfCloseWithBufferedData(t *testing.T) {
 func TestStreamWaitReadHalfCloseDrainedEOF(t *testing.T) {
 	s := newUnitTestStream()
 	s.fin()
-	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	if !s.isWriteClosed.Swap(true) {
+		close(s.writeDone)
+	}
 	s.tryHalfCloseCleanup()
 
 	if err := s.waitRead(); err != io.EOF {
@@ -746,7 +752,7 @@ func newUnitTestStreamV2() *stream {
 
 func TestWriteV2ClosedPipe(t *testing.T) {
 	s := newUnitTestStreamV2()
-	close(s.chWriteClosed)
+	close(s.writeDone)
 
 	if _, err := s.writeV2([]byte("x")); err != io.ErrClosedPipe {
 		t.Fatalf("expected io.ErrClosedPipe, got %v", err)

@@ -65,8 +65,8 @@ type stream struct {
 	finEventOnce sync.Once // Ensures chFinEvent is closed only once
 
 	// half-close support: local write closed (sent FIN)
-	chWriteClosed   chan struct{}
-	writeClosedOnce sync.Once // Ensures chWriteClosed is closed only once
+	writeDone     chan struct{}
+	isWriteClosed atomic.Bool // Ensures writeDone is closed only once
 
 	// read/write deadline
 	readDeadline, writeDeadline *deadline.Deadline
@@ -205,7 +205,7 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.sess = sess
 	s.done = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.chWriteClosed = make(chan struct{})                             // Signals local write-side closure.
+	s.writeDone = make(chan struct{})                                 // Signals local write-side closure.
 	s.peerWindow = initialPeerWindow                                  // Initial peer receive window.
 	s.windowUpdateThreshold = uint32(sess.config.MaxStreamBuffer / 2) // Cached update threshold.
 	// Preallocate the receive ring to reduce allocations during data transfer.
@@ -584,7 +584,7 @@ func (s *stream) waitRead() error {
 // checkWriteClosed reports whether the local write side or whole stream is closed.
 func (s *stream) checkWriteClosed() error {
 	select {
-	case <-s.chWriteClosed: // The local write side was closed.
+	case <-s.writeDone: // The local write side was closed.
 		return io.ErrClosedPipe
 	case <-s.done: // The stream was fully closed.
 		return io.ErrClosedPipe
@@ -709,7 +709,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		// here propagates flow control to the caller as backpressure.
 		select {
 		case <-s.chWriterWakeup: // The stream's writable state may have changed.
-		case <-s.chWriteClosed: // The local write side was half-closed.
+		case <-s.writeDone: // The local write side was half-closed.
 			return sent, io.ErrClosedPipe
 		case <-s.done:
 			return sent, io.ErrClosedPipe
@@ -728,15 +728,10 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 // but any further writes will return io.ErrClosedPipe.
 // This is similar to net.TCPConn.CloseWrite().
 func (s *stream) CloseWrite() error {
-	var once bool
-	s.writeClosedOnce.Do(func() {
-		close(s.chWriteClosed)
-		once = true
-	})
-
-	if !once {
+	if s.isWriteClosed.Swap(true) {
 		return io.ErrClosedPipe
 	}
+	close(s.writeDone)
 
 	// Notify the peer that no more data will be written on this stream.
 	f := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
@@ -765,9 +760,9 @@ func (s *stream) Close() error {
 	close(s.done)
 
 	// Mark the local write side closed if it has not already been closed.
-	s.writeClosedOnce.Do(func() {
-		close(s.chWriteClosed)
-	})
+	if !s.isWriteClosed.Swap(true) {
+		close(s.writeDone)
+	}
 
 	// Send FIN after prior data frames so the peer observes them in order.
 	f := newFrame(byte(s.sess.config.Version), cmdFIN, s.id)
@@ -910,9 +905,7 @@ func (s *stream) tryHalfCloseCleanup() {
 		return
 	}
 
-	select {
-	case <-s.chWriteClosed:
-	default:
+	if !s.isWriteClosed.Load() {
 		return
 	}
 
@@ -945,9 +938,7 @@ func (s *stream) isNormalHalfClosed() bool {
 		return false
 	}
 
-	select {
-	case <-s.chWriteClosed:
-	default:
+	if !s.isWriteClosed.Load() {
 		return false
 	}
 
