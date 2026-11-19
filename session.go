@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/pion/transport/v5/deadline"
+	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
 const (
@@ -124,8 +125,8 @@ type Session struct {
 	sessionIsActive atomic.Int32       // flag session is active
 	acceptDeadline  *deadline.Deadline // deadline for Accept()
 
+	activeCall       *libsync.Quit     // WaitGroup for pending tasks (e.g. write requests)
 	requestID        atomic.Uint32     // Monotonic increasing write request ID
-	writeReqLock     sync.RWMutex      // fences write request admission during shutdown
 	shaper           chan writeRequest // a shaper for writing
 	sq               *shaperQueue
 	chShaperDone     chan struct{}
@@ -143,6 +144,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chAccepts = make(chan *stream, defaultAcceptBacklog)
 	s.bucket.Store(int32(config.MaxReceiveBuffer))
 	s.bucketNotify = make(chan struct{}, 1)
+	s.activeCall = libsync.NewQuit()
 	s.shaper = make(chan writeRequest, maxShaperSize)
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
@@ -296,17 +298,10 @@ func (s *Session) Close() error {
 	close(s.done)
 
 	// Wait for in-flight admissions to finish before the shaper drains its queues.
-	s.writeReqLock.Lock()
-	s.writeReqLock.Unlock()
+	<-s.chShaperDone
 
 	s.closeStreams()
 	err := s.conn.Close()
-	if s.chShaperDone != nil {
-		<-s.chShaperDone
-	}
-	// Drain again because an admission racing with shutdown may have completed
-	// after shaperLoop's initial drain.
-	s.discardPendingWrites(io.ErrClosedPipe)
 	s.drainAccepts()
 	return err
 }
@@ -424,11 +419,11 @@ func (s *Session) recvLoop() {
 		// Wait for receive capacity, or stop if the session closes.
 		for s.bucket.Load() <= 0 && !s.IsClosed() {
 			select {
-			case <-s.bucketNotify:
 			case <-s.done:
 				// With no receive capacity, shutdown wakes this wait directly.
 				// A shutdown during io.ReadFull instead surfaces as a read error.
 				return
+			case <-s.bucketNotify:
 			}
 		}
 
@@ -591,28 +586,15 @@ func (s *Session) keepalive() {
 
 // shaperLoop prioritizes control frames and schedules data frames fairly across streams.
 func (s *Session) shaperLoop() {
-	defer func() {
-		err := io.ErrClosedPipe
-		select {
-		case <-s.chSocketWriteError:
-			if s.socketWriteError != nil {
-				err = s.socketWriteError
-			}
-		default:
-		}
-		s.writeReqLock.Lock()
-		s.discardPendingWrites(err)
-		s.writeReqLock.Unlock()
-		close(s.chShaperDone)
-	}()
+	err := io.ErrClosedPipe
 	chShaper := s.shaper
-
 	for {
 		select {
 		case <-s.done:
-			return
+			goto exit
 		case <-s.chSocketWriteError:
-			return
+			err = s.socketWriteError
+			goto exit
 		case r := <-chShaper:
 			s.sq.Push(r)
 			// Batch additional requests while there is room in the shaper queue.
@@ -635,6 +617,11 @@ func (s *Session) shaperLoop() {
 			chShaper = s.shaper
 		}
 	}
+
+exit:
+	s.activeCall.Wait()
+	s.discardPendingWrites(err)
+	close(s.chShaperDone)
 }
 
 // discardPendingWrites completes queued requests with err during shutdown.
@@ -768,18 +755,14 @@ func (s *Session) writeControlFrame(f Frame) (n int, err error) {
 // sendWriteRequest queues a frame before deadline, session shutdown, or a
 // connection write error.
 func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) error {
-	s.writeReqLock.RLock()
-	defer s.writeReqLock.RUnlock()
+	if !s.activeCall.Add(1) {
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
 
-	if s.IsClosed() {
-		return io.ErrClosedPipe
-	}
-
-	select {
-	case <-s.chSocketWriteError:
 		return s.socketWriteError
-	default:
 	}
+	defer s.activeCall.Done()
 
 	select {
 	case s.shaper <- req:

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
 type shortWriteWriter struct {
@@ -105,6 +107,8 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	s.sess.chAccepts = make(chan *stream, 1)
 	s.sess.bucket.Add(int32(s.sess.config.MaxReceiveBuffer))
 	s.sess.chAccepts <- s
+	s.sess.chShaperDone = make(chan struct{})
+	close(s.sess.chShaperDone)
 
 	buf := malloc(6)
 	copy(*buf, "abcdef")
@@ -347,34 +351,6 @@ func TestWriteFrameInternalWriteBuffersErrorPreserved(t *testing.T) {
 	}
 }
 
-func TestNotifyWriteErrorDoesNotWaitForWriteAdmissionLock(t *testing.T) {
-	sess := &Session{chSocketWriteError: make(chan struct{})}
-	sess.writeReqLock.Lock()
-	done := make(chan struct{})
-	writeErr := errors.New("write failed")
-	go func() {
-		sess.notifyWriteError(writeErr)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		sess.writeReqLock.Unlock()
-		t.Fatal("write error notification blocked on write admission lock")
-	}
-	sess.writeReqLock.Unlock()
-
-	select {
-	case <-sess.chSocketWriteError:
-	default:
-		t.Fatal("write error notification did not close the error channel")
-	}
-	if got := sess.socketWriteError; got != writeErr {
-		t.Fatalf("stored write error = %v; want %v", got, writeErr)
-	}
-}
-
 func TestDiscardPendingWritesSignalsWaitingWriters(t *testing.T) {
 	sess := &Session{
 		shaper: make(chan writeRequest, 2),
@@ -436,6 +412,7 @@ func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T)
 		done:               make(chan struct{}),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
+		activeCall:         libsync.NewQuit(),
 	}
 
 	deadline := time.NewTimer(5 * time.Second)
@@ -543,6 +520,7 @@ func newUnitTestStream() *stream {
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
+		activeCall:         libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	sess.streams[st.id] = st
@@ -702,6 +680,7 @@ func TestSendWindowUpdateTimeout(t *testing.T) {
 		bucketNotify:       make(chan struct{}, 1),
 		shaper:             nil,
 		done:               make(chan struct{}),
+		activeCall:         libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	st.readDeadline.Set(time.Now().Add(-time.Second))
