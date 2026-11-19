@@ -103,13 +103,13 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	s.sess.conn = conn
 	s.sess.done = make(chan struct{})
 	s.sess.chAccepts = make(chan *stream, 1)
-	atomic.StoreInt32(&s.sess.bucket, int32(s.sess.config.MaxReceiveBuffer))
+	s.sess.bucket.Add(int32(s.sess.config.MaxReceiveBuffer))
 	s.sess.chAccepts <- s
 
 	buf := malloc(6)
 	copy(*buf, "abcdef")
 	s.pushBytes(buf)
-	atomic.AddInt32(&s.sess.bucket, -6)
+	s.sess.bucket.Add(-6)
 
 	if err := s.sess.Close(); err != nil {
 		t.Fatal("session close failed:", err)
@@ -127,7 +127,7 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	if len(s.sess.chAccepts) != 0 {
 		t.Fatalf("session close left %d pending accepts", len(s.sess.chAccepts))
 	}
-	if got := atomic.LoadInt32(&s.sess.bucket); got != int32(s.sess.config.MaxReceiveBuffer) {
+	if got := s.sess.bucket.Load(); got != int32(s.sess.config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, s.sess.config.MaxReceiveBuffer)
 	}
 }
@@ -481,7 +481,6 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		conn:               conn,
 		config:             cfg,
 		streams:            make(map[uint32]*stream),
-		bucket:             int32(cfg.MaxReceiveBuffer),
 		bucketNotify:       make(chan struct{}, 1),
 		done:               make(chan struct{}),
 		chAccepts:          make(chan *stream, 1),
@@ -489,6 +488,7 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		chSocketWriteError: make(chan struct{}),
 		chProtoError:       make(chan struct{}),
 	}
+	sess.bucket.Store(int32(cfg.MaxReceiveBuffer))
 	recvDone := make(chan struct{})
 	go func() {
 		sess.recvLoop()

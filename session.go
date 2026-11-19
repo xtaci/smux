@@ -105,7 +105,7 @@ type Session struct {
 	nextStreamID     uint32 // next stream identifier
 	nextStreamIDLock sync.Mutex
 
-	bucket       int32         // token bucket
+	bucket       atomic.Int32  // token bucket
 	bucketNotify chan struct{} // used for waiting for tokens
 
 	streams    map[uint32]*stream // all streams in this session
@@ -149,7 +149,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.config = config
 	s.streams = make(map[uint32]*stream)
 	s.chAccepts = make(chan *stream, defaultAcceptBacklog)
-	s.bucket = int32(config.MaxReceiveBuffer)
+	s.bucket.Store(int32(config.MaxReceiveBuffer))
 	s.bucketNotify = make(chan struct{}, 1)
 	s.shaper = make(chan writeRequest, maxShaperSize)
 	s.chSocketReadError = make(chan struct{})
@@ -292,7 +292,7 @@ func (s *Session) closeStreams() {
 	for k, stream := range s.streams {
 		stream.sessionClose()
 		if n := stream.recycleTokens(); n > 0 {
-			atomic.AddInt32(&s.bucket, int32(n))
+			s.bucket.Add(int32(n))
 		}
 		delete(s.streams, k)
 	}
@@ -424,7 +424,7 @@ func (s *Session) streamClosed(sid uint32) {
 
 	if n := stream.recycleTokens(); n > 0 {
 		// Restore receive capacity held by unread data from this stream.
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+		if s.bucket.Add(int32(n)) > 0 {
 			s.notifyBucket()
 		}
 	}
@@ -433,7 +433,7 @@ func (s *Session) streamClosed(sid uint32) {
 
 // returnTokens returns receive-buffer capacity after a stream reads data.
 func (s *Session) returnTokens(n int) {
-	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+	if s.bucket.Add(int32(n)) > 0 {
 		s.notifyBucket()
 	}
 }
@@ -445,7 +445,7 @@ func (s *Session) recvLoop() {
 
 	for {
 		// Wait for receive capacity, or stop if the session closes.
-		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
+		for s.bucket.Load() <= 0 && !s.IsClosed() {
 			select {
 			case <-s.bucketNotify:
 			case <-s.done:
@@ -544,7 +544,7 @@ func (s *Session) recvLoop() {
 					stream.pushBytes(pNewbuf)
 					// Tokens are charged only while payload is buffered; reads
 					// and stream cleanup return them to the shared bucket.
-					atomic.AddInt32(&s.bucket, -int32(written))
+					s.bucket.Add(-int32(written))
 					stream.wakeupReader()
 					buffered = true
 				}
@@ -601,7 +601,7 @@ func (s *Session) keepalive() {
 			if !s.sessionIsActive.CompareAndSwap(1, 0) {
 				// Do not time out while recvLoop is paused because the shared
 				// receive buffer is full.
-				if atomic.LoadInt32(&s.bucket) > 0 {
+				if s.bucket.Load() > 0 {
 					s.Close()
 					return
 				}

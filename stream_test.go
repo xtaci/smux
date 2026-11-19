@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -540,7 +539,7 @@ func TestHalfClosePreservesUnreadData(t *testing.T) {
 							if serverSession.NumStreams() != 0 {
 								t.Fatalf("Close left %d streams in server session", serverSession.NumStreams())
 							}
-							if got := atomic.LoadInt32(&serverSession.bucket); got != int32(config.MaxReceiveBuffer) {
+							if got := serverSession.bucket.Load(); got != int32(config.MaxReceiveBuffer) {
 								t.Fatalf("Close left receive bucket at %d; want %d", got, config.MaxReceiveBuffer)
 							}
 							return
