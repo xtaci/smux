@@ -61,8 +61,8 @@ type stream struct {
 	v2WriteLock sync.Mutex // Serializes v2 window reservations between writers.
 
 	// to handle FIN event(i.e. EOF from remote)
-	chFinEvent   chan struct{}
-	finEventOnce sync.Once // Ensures chFinEvent is closed only once
+	readDone     chan struct{}
+	isReadClosed atomic.Bool // Ensures readDone is closed only once
 
 	// half-close support: local write closed (sent FIN)
 	writeDone     chan struct{}
@@ -204,7 +204,7 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	s.frameSize = frameSize
 	s.sess = sess
 	s.done = make(chan struct{})
-	s.chFinEvent = make(chan struct{})
+	s.readDone = make(chan struct{})
 	s.writeDone = make(chan struct{})                                 // Signals local write-side closure.
 	s.peerWindow = initialPeerWindow                                  // Initial peer receive window.
 	s.windowUpdateThreshold = uint32(sess.config.MaxStreamBuffer / 2) // Cached update threshold.
@@ -552,7 +552,7 @@ func (s *stream) waitRead() error {
 	select {
 	case <-s.chReaderWakeup: // A read condition may have changed.
 		return nil
-	case <-s.chFinEvent:
+	case <-s.readDone:
 		// Check the buffer before returning EOF so queued data remains readable.
 		s.bufferLock.Lock()
 		defer s.bufferLock.Unlock()
@@ -890,18 +890,16 @@ func (s *stream) update(consumed uint32, window uint32) {
 
 // fin records that the peer has closed its write side by sending FIN.
 func (s *stream) fin() {
-	s.finEventOnce.Do(func() {
-		close(s.chFinEvent)
-	})
+	if !s.isReadClosed.Swap(true) {
+		close(s.readDone)
+	}
 	s.tryHalfCloseCleanup()
 }
 
 // tryHalfCloseCleanup closes the stream after both sides send FIN and removes
 // it from the session once its buffered data has been consumed.
 func (s *stream) tryHalfCloseCleanup() {
-	select {
-	case <-s.chFinEvent:
-	default:
+	if !s.isReadClosed.Load() {
 		return
 	}
 
@@ -932,9 +930,7 @@ func (s *stream) isNormalHalfClosed() bool {
 		return false
 	}
 
-	select {
-	case <-s.chFinEvent:
-	default:
+	if !s.isReadClosed.Load() {
 		return false
 	}
 

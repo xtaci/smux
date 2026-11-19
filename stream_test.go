@@ -499,7 +499,7 @@ func TestHalfClosePreservesUnreadData(t *testing.T) {
 
 						if !localFirst {
 							select {
-							case <-serverStream.chFinEvent:
+							case <-serverStream.readDone:
 							case <-time.After(5 * time.Second):
 								t.Fatal("timed out waiting for peer FIN")
 							}
@@ -510,7 +510,7 @@ func TestHalfClosePreservesUnreadData(t *testing.T) {
 
 						if closeUnread {
 							select {
-							case <-serverStream.chFinEvent:
+							case <-serverStream.readDone:
 							case <-time.After(5 * time.Second):
 								t.Fatal("timed out waiting for peer FIN")
 							}

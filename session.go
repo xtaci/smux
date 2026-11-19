@@ -539,10 +539,8 @@ func (s *Session) recvLoop() {
 			s.streamLock.Lock()
 			buffered := false
 			if stream, ok := s.streams[sid]; ok {
-				select {
-				case <-stream.chFinEvent:
-					// Ignore data sent after the peer closed its write side.
-				default:
+				// Ignore data sent after the peer closed its write side.
+				if !stream.isReadClosed.Load() {
 					stream.pushBytes(pNewbuf)
 					// Tokens are charged only while payload is buffered; reads
 					// and stream cleanup return them to the shared bucket.
