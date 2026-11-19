@@ -235,11 +235,17 @@ func (s *stream) Read(b []byte) (n int, err error) {
 			if err != ErrWouldBlock {
 				return n, err
 			}
-			if ew := s.waitRead(); ew != nil {
-				if ew == io.ErrClosedPipe && s.isNormalHalfClosed() {
+
+			err = s.waitRead()
+			switch err {
+			case nil:
+			case io.ErrClosedPipe:
+				if s.isNormalHalfClosed() {
 					continue
 				}
-				return 0, ew
+				return
+			default:
+				return
 			}
 		}
 	}
@@ -249,11 +255,17 @@ func (s *stream) Read(b []byte) (n int, err error) {
 		if err != ErrWouldBlock {
 			return n, err
 		}
-		if ew := s.waitRead(); ew != nil {
-			if ew == io.ErrClosedPipe && s.isNormalHalfClosed() {
+
+		err = s.waitRead()
+		switch err {
+		case nil:
+		case io.ErrClosedPipe:
+			if s.isNormalHalfClosed() {
 				continue
 			}
-			return 0, ew
+			return
+		default:
+			return
 		}
 	}
 }
@@ -261,6 +273,11 @@ func (s *stream) Read(b []byte) (n int, err error) {
 // tryReadV1 reads buffered data without blocking, using protocol version 1
 // behavior.
 func (s *stream) tryReadV1(b []byte) (n int, err error) {
+	err = s.readDeadline.Err()
+	if err != nil {
+		return 0, ErrTimeout
+	}
+
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -291,6 +308,8 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 			return 0, io.ErrClosedPipe
 		}
 		return 0, io.EOF
+	case <-s.readDeadline.Done():
+		return 0, ErrTimeout
 	default:
 		return 0, ErrWouldBlock
 	}
@@ -298,6 +317,11 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 
 // tryReadV2 is the non-blocking version of Read for version 2 streams.
 func (s *stream) tryReadV2(b []byte) (n int, err error) {
+	err = s.readDeadline.Err()
+	if err != nil {
+		return 0, ErrTimeout
+	}
+
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -368,6 +392,11 @@ func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
 // writeToV1 drains buffered data to w without protocol version 2 updates.
 func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 	for {
+		err = s.readDeadline.Err()
+		if err != nil {
+			return n, ErrTimeout
+		}
+
 		var buf []byte
 		var head *[]byte
 
@@ -397,17 +426,24 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 				return n, io.ErrShortWrite
 			}
 			s.tryHalfCloseCleanup()
-		} else if ew := s.waitRead(); ew != nil {
-			if ew == io.EOF {
-				if s.isForcedClosed() {
-					return n, io.ErrClosedPipe
-				}
-				return n, nil
+			continue
+		}
+
+		err = s.waitRead()
+		switch err {
+		case nil:
+		case io.EOF:
+			if s.isForcedClosed() {
+				return n, io.ErrClosedPipe
 			}
-			if ew == io.ErrClosedPipe && s.isNormalHalfClosed() {
+			return n, nil
+		case io.ErrClosedPipe:
+			if s.isNormalHalfClosed() {
 				continue
 			}
-			return n, ew
+			return
+		default:
+			return
 		}
 	}
 }
@@ -415,6 +451,11 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 // writeToV2 drains buffered data to w and reports consumed bytes to the peer.
 func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 	for {
+		err = s.readDeadline.Err()
+		if err != nil {
+			return n, ErrTimeout
+		}
+
 		var notifyConsumed uint32
 		var buf []byte
 		var head *[]byte
@@ -473,17 +514,24 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 				}
 			}
 			s.tryHalfCloseCleanup()
-		} else if ew := s.waitRead(); ew != nil {
-			if ew == io.EOF {
-				if s.isForcedClosed() {
-					return n, io.ErrClosedPipe
-				}
-				return n, nil
+			continue
+		}
+
+		err = s.waitRead()
+		switch err {
+		case nil:
+		case io.EOF:
+			if s.isForcedClosed() {
+				return n, io.ErrClosedPipe
 			}
-			if ew == io.ErrClosedPipe && s.isNormalHalfClosed() {
+			return n, nil
+		case io.ErrClosedPipe:
+			if s.isNormalHalfClosed() {
 				continue
 			}
-			return n, ew
+			return
+		default:
+			return
 		}
 	}
 }
@@ -540,6 +588,8 @@ func (s *stream) checkWriteClosed() error {
 		return io.ErrClosedPipe
 	case <-s.die: // The stream was fully closed.
 		return io.ErrClosedPipe
+	case <-s.writeDeadline.Done():
+		return ErrTimeout
 	default:
 		return nil
 	}

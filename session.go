@@ -255,6 +255,10 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, io.ErrClosedPipe
 	}
 
+	if s.acceptDeadline.Err() != nil {
+		return nil, ErrTimeout
+	}
+
 	select {
 	case stream := <-s.chAccepts:
 		if s.IsClosed() {
