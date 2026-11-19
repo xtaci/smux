@@ -37,7 +37,6 @@ import (
 
 const (
 	defaultAcceptBacklog = 1024
-	minShaperNotifySize  = 16
 	maxShaperSize        = 1024
 	openCloseTimeout     = 30 * time.Second // Timeout for opening/closing streams
 )
