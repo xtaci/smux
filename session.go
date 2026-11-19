@@ -737,9 +737,7 @@ EVENT_LOOP:
 				}
 
 				n -= headerSize
-				if n < 0 {
-					n = 0
-				}
+				n = max(n, 0)
 
 				result := writeResult{
 					n:   n,
