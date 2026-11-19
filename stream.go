@@ -562,8 +562,6 @@ func (s *stream) waitRead() error {
 		return io.EOF
 	case <-s.sess.chSocketReadError:
 		return s.sess.socketReadError
-	case <-s.sess.chProtoError:
-		return s.sess.protoError
 	case <-s.readDeadline.Done():
 		return ErrTimeout
 	case <-s.done:

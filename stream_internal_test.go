@@ -436,7 +436,6 @@ func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T)
 		done:               make(chan struct{}),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
 	}
 
 	deadline := time.NewTimer(5 * time.Second)
@@ -486,7 +485,6 @@ func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
 		chAccepts:          make(chan *stream, 1),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
 	}
 	sess.bucket.Store(int32(cfg.MaxReceiveBuffer))
 	recvDone := make(chan struct{})
@@ -544,7 +542,6 @@ func newUnitTestStream() *stream {
 		streams:            make(map[uint32]*stream),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
@@ -702,7 +699,6 @@ func TestSendWindowUpdateTimeout(t *testing.T) {
 		streams:            make(map[uint32]*stream),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
 		shaper:             nil,
 		done:               make(chan struct{}),
@@ -741,7 +737,6 @@ func newUnitTestStreamV2() *stream {
 		streams:            make(map[uint32]*stream),
 		chSocketReadError:  make(chan struct{}),
 		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
 		bucketNotify:       make(chan struct{}, 1),
 		done:               make(chan struct{}),
 	}

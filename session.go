@@ -121,11 +121,6 @@ type Session struct {
 	socketReadErrorOnce  sync.Once
 	socketWriteErrorOnce sync.Once
 
-	// smux protocol errors
-	protoError     error
-	chProtoError   chan struct{}
-	protoErrorOnce sync.Once
-
 	chAccepts chan *stream
 
 	sessionIsActive atomic.Int32       // flag session is active
@@ -153,7 +148,6 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.shaper = make(chan writeRequest, maxShaperSize)
 	s.chSocketReadError = make(chan struct{})
 	s.chSocketWriteError = make(chan struct{})
-	s.chProtoError = make(chan struct{})
 	s.chShaperPending = make(chan struct{}, 1)
 	s.chShaperConsumed = make(chan struct{}, 1)
 	s.chShaperDone = make(chan struct{})
@@ -271,8 +265,6 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, ErrTimeout
 	case <-s.chSocketReadError:
 		return nil, s.socketReadError
-	case <-s.chProtoError:
-		return nil, s.protoError
 	case <-s.done:
 		return nil, io.ErrClosedPipe
 	}
@@ -358,14 +350,6 @@ func (s *Session) notifyWriteError(err error) {
 	s.socketWriteErrorOnce.Do(func() {
 		s.socketWriteError = err
 		close(s.chSocketWriteError)
-	})
-}
-
-// notifyProtoError records the first protocol error.
-func (s *Session) notifyProtoError(err error) {
-	s.protoErrorOnce.Do(func() {
-		s.protoError = err
-		close(s.chProtoError)
 	})
 }
 
@@ -466,7 +450,7 @@ func (s *Session) recvLoop() {
 
 		// Reject frames from an incompatible protocol version.
 		if hdr.Version() != byte(s.config.Version) {
-			s.notifyProtoError(ErrInvalidProtocol)
+			s.notifyReadError(ErrInvalidProtocol)
 			return
 		}
 
@@ -475,12 +459,12 @@ func (s *Session) recvLoop() {
 		switch hdr.Cmd() {
 		case cmdNOP:
 			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
+				s.notifyReadError(ErrInvalidProtocol)
 				return
 			}
 		case cmdSYN: // Open a new peer-initiated stream.
 			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
+				s.notifyReadError(ErrInvalidProtocol)
 				return
 			}
 			var accepted *stream
@@ -508,7 +492,7 @@ func (s *Session) recvLoop() {
 
 		case cmdFIN: // Mark the peer's write side as closed.
 			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
+				s.notifyReadError(ErrInvalidProtocol)
 				return
 			}
 			s.streamLock.Lock()
@@ -556,11 +540,11 @@ func (s *Session) recvLoop() {
 
 		case cmdUPD: // Apply a protocol-version-2 flow-control update.
 			if s.config.Version != 2 {
-				s.notifyProtoError(ErrInvalidProtocol)
+				s.notifyReadError(ErrInvalidProtocol)
 				return
 			}
 			if hdr.Length() != szCmdUPD {
-				s.notifyProtoError(ErrInvalidProtocol)
+				s.notifyReadError(ErrInvalidProtocol)
 				return
 			}
 
@@ -579,7 +563,7 @@ func (s *Session) recvLoop() {
 			}
 
 		default:
-			s.notifyProtoError(ErrInvalidProtocol)
+			s.notifyReadError(ErrInvalidProtocol)
 			return
 		}
 	}
