@@ -114,12 +114,10 @@ type Session struct {
 	closed atomic.Bool   // fast IsClosed check
 
 	// socket error handling
-	socketReadError      error
-	socketWriteError     error
-	chSocketReadError    chan struct{}
-	chSocketWriteError   chan struct{}
-	socketReadErrorOnce  sync.Once
-	socketWriteErrorOnce sync.Once
+	socketReadError    error
+	socketWriteError   error
+	chSocketReadError  chan struct{}
+	chSocketWriteError chan struct{}
 
 	chAccepts chan *stream
 
@@ -339,18 +337,14 @@ func (s *Session) notifyBucket() {
 
 // notifyReadError records the first underlying-connection read error.
 func (s *Session) notifyReadError(err error) {
-	s.socketReadErrorOnce.Do(func() {
-		s.socketReadError = err
-		close(s.chSocketReadError)
-	})
+	s.socketReadError = err
+	close(s.chSocketReadError)
 }
 
 // notifyWriteError records the first underlying-connection write error.
 func (s *Session) notifyWriteError(err error) {
-	s.socketWriteErrorOnce.Do(func() {
-		s.socketWriteError = err
-		close(s.chSocketWriteError)
-	})
+	s.socketWriteError = err
+	close(s.chSocketWriteError)
 }
 
 // IsClosed reports whether the session has shut down.
