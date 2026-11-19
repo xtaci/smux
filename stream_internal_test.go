@@ -664,6 +664,7 @@ func TestStreamSetDeadlineWakesUp(t *testing.T) {
 
 func TestStreamWaitReadClosed(t *testing.T) {
 	s := newUnitTestStream()
+	s.forcedClose.Store(true)
 	close(s.done)
 	if err := s.waitRead(); err != io.ErrClosedPipe {
 		t.Fatalf("expected io.ErrClosedPipe, got %v", err)

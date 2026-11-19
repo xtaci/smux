@@ -237,15 +237,8 @@ func (s *stream) Read(b []byte) (n int, err error) {
 			}
 
 			err = s.waitRead()
-			switch err {
-			case nil:
-			case io.ErrClosedPipe:
-				if !s.isNormalHalfClosed() {
-					return
-				}
-
-			default:
-				return
+			if err != nil {
+				return 0, err
 			}
 		}
 	}
@@ -257,15 +250,8 @@ func (s *stream) Read(b []byte) (n int, err error) {
 		}
 
 		err = s.waitRead()
-		switch err {
-		case nil:
-		case io.ErrClosedPipe:
-			if !s.isNormalHalfClosed() {
-				return
-			}
-
-		default:
-			return
+		if err != nil {
+			return 0, err
 		}
 	}
 }
@@ -273,6 +259,10 @@ func (s *stream) Read(b []byte) (n int, err error) {
 // tryReadV1 reads buffered data without blocking, using protocol version 1
 // behavior.
 func (s *stream) tryReadV1(b []byte) (n int, err error) {
+	if s.isForcedClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
 	err = s.readDeadline.Err()
 	if err != nil {
 		return 0, ErrTimeout
@@ -317,6 +307,10 @@ func (s *stream) tryReadV1(b []byte) (n int, err error) {
 
 // tryReadV2 is the non-blocking version of Read for version 2 streams.
 func (s *stream) tryReadV2(b []byte) (n int, err error) {
+	if s.isForcedClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
 	err = s.readDeadline.Err()
 	if err != nil {
 		return 0, ErrTimeout
@@ -392,6 +386,10 @@ func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
 // writeToV1 drains buffered data to w without protocol version 2 updates.
 func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 	for {
+		if s.isForcedClosed() {
+			return n, io.ErrClosedPipe
+		}
+
 		err = s.readDeadline.Err()
 		if err != nil {
 			return n, ErrTimeout
@@ -433,17 +431,10 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 		switch err {
 		case nil:
 		case io.EOF:
-			if s.isForcedClosed() {
-				return n, io.ErrClosedPipe
-			}
 			return n, nil
-		case io.ErrClosedPipe:
-			if s.isNormalHalfClosed() {
-				continue
-			}
-			return
+
 		default:
-			return
+			return n, err
 		}
 	}
 }
@@ -451,6 +442,10 @@ func (s *stream) writeToV1(w io.Writer) (n int64, err error) {
 // writeToV2 drains buffered data to w and reports consumed bytes to the peer.
 func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 	for {
+		if s.isForcedClosed() {
+			return n, io.ErrClosedPipe
+		}
+
 		err = s.readDeadline.Err()
 		if err != nil {
 			return n, ErrTimeout
@@ -521,17 +516,10 @@ func (s *stream) writeToV2(w io.Writer) (n int64, err error) {
 		switch err {
 		case nil:
 		case io.EOF:
-			if s.isForcedClosed() {
-				return n, io.ErrClosedPipe
-			}
 			return n, nil
-		case io.ErrClosedPipe:
-			if s.isNormalHalfClosed() {
-				continue
-			}
-			return
+
 		default:
-			return
+			return n, err
 		}
 	}
 }
@@ -547,47 +535,152 @@ func (s *stream) sendWindowUpdate(consumed uint32) error {
 	return err
 }
 
-// waitRead blocks until data, closure, an I/O error, or the read deadline.
+// waitRead blocks until a read condition changes, the stream or its session
+// read side closes, a session error occurs, or the read deadline expires.
+//
+// Note that tryRead* is non-blocking and only falls back to waitRead when the
+// receive ring is empty, so this function is never entered while buffered
+// data is still available.
+//
+// The state-channel cases (readDone, sess.readDone, done) deliberately do not
+// return per case. When two of them close concurrently — a forced Close racing
+// with the peer's FIN, with a session read error, or with the read deadline —
+// selectgo picks one case at random, and a per-case return would make the
+// outcome of Read depend on that choice. Instead, every such case converges on
+// the isForcedClosed / buffer-drained tail at the bottom, which guarantees the
+// same answer regardless of which case fired:
+//
+//   - a forced close wins over a peer FIN, a session error, and deadline
+//     expiry, so a caller never mistakes an aborted stream for a clean EOF;
+//   - buffered data stays readable after the peer half-closes: the tail
+//     returns nil and lets tryRead* drain the ring before reporting EOF;
+//   - io.EOF is reported only once the ring is actually drained.
+//
+// A wakeup from chReaderWakeup or the read deadline can return directly
+// because its meaning does not depend on concurrent state transitions (the
+// next tryRead* re-checks both forced close and the deadline before consuming
+// any data). The session read error can return directly when the stream is
+// still open, since a stream-local forced close would have been caught by the
+// isClosed check above.
 func (s *stream) waitRead() error {
 	select {
-	case <-s.chReaderWakeup: // A read condition may have changed.
+	case <-s.chReaderWakeup:
+		// A read condition may have changed.
+		// The next round read will recheck force-close and ReadDeadline.
 		return nil
 	case <-s.readDone:
+		if s.isClosed.Load() {
+			// The stream is fully closed, check forced-close or both half-closed.
+			break
+		}
+
+		// If the stream is half-closed, but the read deadline has expired, return ErrTimeout.
+		if s.readDeadline.Err() != nil {
+			return ErrTimeout
+		}
+
+		// Peer closed the write side, but there may still be buffered data to read.
 		// Check the buffer before returning EOF so queued data remains readable.
 		s.bufferLock.Lock()
 		defer s.bufferLock.Unlock()
 		if s.bufferRing.len() > 0 {
 			return nil
 		}
+		if s.isForcedClosed() {
+			return io.ErrClosedPipe
+		}
 		return io.EOF
 	case <-s.sess.readDone:
+		// The stream is fully closed, check forced-close or both half-closed.
+		if s.isClosed.Load() {
+			break
+		}
+
+		if s.isReadClosed.Load() {
+			// Peer closed the write side, but there may still be buffered data to read.
+			// Check the buffer before returning EOF so queued data remains readable.
+
+			// If the stream is half-closed, but the read deadline has expired, return ErrTimeout.
+			if s.readDeadline.Err() != nil {
+				return ErrTimeout
+			}
+
+			s.bufferLock.Lock()
+			defer s.bufferLock.Unlock()
+
+			if s.bufferRing.len() > 0 {
+				return nil
+			}
+
+			if s.isForcedClosed() {
+				return io.ErrClosedPipe
+			}
+			return io.EOF
+		}
+
+		// The session read-side is not closed.
 		return s.sess.readErr
 	case <-s.readDeadline.Done():
-		return ErrTimeout
-	case <-s.done:
-		if !s.isNormalHalfClosed() {
+		if s.isForcedClosed() {
 			return io.ErrClosedPipe
 		}
 
-		s.bufferLock.Lock()
-		defer s.bufferLock.Unlock()
-
-		if s.bufferRing.len() == 0 {
-			return io.EOF
+		select {
+		case <-s.sess.readDone:
+			return s.sess.readErr
+		default:
 		}
-		return nil
+
+		return ErrTimeout
+	case <-s.done:
+		// The stream is fully closed, check forced-close or both half-closed.
 	}
 
+	// If the stream is forced closed, not allowing any further reads, return io.ErrClosedPipe.
+	if s.isForcedClosed() {
+		return io.ErrClosedPipe
+	}
+
+	// If the stream is half-closed, but the read deadline has expired, return ErrTimeout.
+	if s.readDeadline.Err() != nil {
+		return ErrTimeout
+	}
+
+	// Otherwise, the stream is both half-closed, allowing reads.
+	s.bufferLock.Lock()
+	defer s.bufferLock.Unlock()
+
+	if s.bufferRing.len() > 0 {
+		return nil
+	}
+	return io.EOF
 }
 
-// checkWriteClosed reports whether the local write side or whole stream is closed.
+// checkWriteClosed reports whether the local write side or whole stream is
+// closed, or whether the write deadline has already expired.
+//
+// When writeDeadline.Done() fires, it may race with stream closure (done) or
+// local half-close (writeDone). Because selectgo chooses randomly among
+// simultaneously ready cases, the deadline case checks isClosed and
+// isWriteClosed before returning ErrTimeout so a close racing with deadline
+// expiry is never masked as a benign timeout.
 func (s *stream) checkWriteClosed() error {
 	select {
-	case <-s.writeDone: // The local write side was closed.
+	case <-s.writeDone:
+		// The local write side was closed.
 		return io.ErrClosedPipe
-	case <-s.done: // The stream was fully closed.
+	case <-s.done:
+		// The stream was fully closed.
 		return io.ErrClosedPipe
 	case <-s.writeDeadline.Done():
+		if s.isClosed.Load() {
+			return io.ErrClosedPipe
+		}
+
+		if s.isWriteClosed.Load() {
+			return io.ErrClosedPipe
+		}
+
 		return ErrTimeout
 	default:
 		return nil
@@ -704,20 +797,49 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 			return sent, nil
 		}
 
-		// Wait for more window space, closure, or the write deadline. Blocking
-		// here propagates flow control to the caller as backpressure.
+		// Wait for more window space, closure, a session write error, or the
+		// write deadline. Blocking here propagates flow control to the caller
+		// as backpressure.
+		//
+		// Cases that wake to re-evaluate window/state or converge on post-select
+		// checks (chWriterWakeup, chUpdate, writeDeadline.Done(), sess.writeDone)
+		// do not return per case, because multiple signals can be ready at once
+		// and selectgo picks among them randomly. Evaluating isClosed,
+		// isWriteClosed, writeDeadline.Err(), and sess.writeErr in a fixed
+		// order after select makes concurrent close/timeout/error races
+		// deterministic, while returning immediately on done or writeDone still
+		// short-circuits those explicit close signals.
 		select {
-		case <-s.chWriterWakeup: // The stream's writable state may have changed.
-		case <-s.writeDone: // The local write side was half-closed.
-			return sent, io.ErrClosedPipe
 		case <-s.done:
 			return sent, io.ErrClosedPipe
+		case <-s.writeDone:
+			// The local write side was half-closed.
+			return sent, io.ErrClosedPipe
+		case <-s.chWriterWakeup:
+			// The stream's writable state may have changed.
+			// Triggered by SetWriteDeadline
+		case <-s.chUpdate:
+			// The peer consumed data or updated its receive window.
 		case <-s.writeDeadline.Done():
-			return sent, ErrTimeout
+			// The write deadline exceeded.
 		case <-s.sess.writeDone:
-			return sent, s.sess.writeErr
-		case <-s.chUpdate: // The peer consumed data or updated its receive window.
-			continue
+			err = s.sess.writeErr
+		}
+
+		if s.isClosed.Load() {
+			return sent, io.ErrClosedPipe
+		}
+
+		if s.isWriteClosed.Load() {
+			return sent, io.ErrClosedPipe
+		}
+
+		if s.writeDeadline.Err() != nil {
+			return sent, ErrTimeout
+		}
+
+		if err != nil {
+			return sent, err
 		}
 	}
 }
@@ -920,24 +1042,6 @@ func (s *stream) tryHalfCloseCleanup() {
 	if drained {
 		s.sess.streamClosed(s.id)
 	}
-}
-
-// isNormalHalfClosed reports whether both peers have closed their write sides
-// without a forced close.
-func (s *stream) isNormalHalfClosed() bool {
-	if s.isForcedClosed() {
-		return false
-	}
-
-	if !s.isReadClosed.Load() {
-		return false
-	}
-
-	if !s.isWriteClosed.Load() {
-		return false
-	}
-
-	return true
 }
 
 // isForcedClosed reports whether the stream was closed explicitly or by its session.
