@@ -625,10 +625,8 @@ func (s *stream) waitRead() error {
 			return io.ErrClosedPipe
 		}
 
-		select {
-		case <-s.sess.readDone:
+		if s.sess.readClosed.Load() {
 			return s.sess.readErr
-		default:
 		}
 
 		return ErrTimeout
@@ -823,7 +821,6 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 		case <-s.writeDeadline.Done():
 			// The write deadline exceeded.
 		case <-s.sess.writeDone:
-			err = s.sess.writeErr
 		}
 
 		if s.isClosed.Load() {
@@ -834,12 +831,12 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 			return sent, io.ErrClosedPipe
 		}
 
-		if s.writeDeadline.Err() != nil {
-			return sent, ErrTimeout
+		if s.sess.writeClosed.Load() {
+			return sent, s.sess.writeErr
 		}
 
-		if err != nil {
-			return sent, err
+		if s.writeDeadline.Err() != nil {
+			return sent, ErrTimeout
 		}
 	}
 }

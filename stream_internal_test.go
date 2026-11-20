@@ -104,9 +104,14 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	defer peer.Close()
 	s.sess.conn = conn
 	s.sess.done = make(chan struct{})
-	s.sess.acceptCh = make(chan *stream, 1)
 	s.sess.bucket.Add(int32(s.sess.config.MaxReceiveBuffer))
-	s.sess.acceptCh <- s
+
+	s.sess.readDone = make(chan struct{})
+	close(s.sess.readDone)
+
+	s.sess.writeDone = make(chan struct{})
+	close(s.sess.writeDone)
+
 	s.sess.shaperDone = make(chan struct{})
 	close(s.sess.shaperDone)
 
@@ -127,9 +132,6 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	}
 	if len(s.sess.streams) != 0 {
 		t.Fatalf("session close left %d streams", len(s.sess.streams))
-	}
-	if len(s.sess.acceptCh) != 0 {
-		t.Fatalf("session close left %d pending accepts", len(s.sess.acceptCh))
 	}
 	if got := s.sess.bucket.Load(); got != int32(s.sess.config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, s.sess.config.MaxReceiveBuffer)

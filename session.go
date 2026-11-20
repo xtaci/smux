@@ -115,9 +115,10 @@ type Session struct {
 	closed atomic.Bool   // fast IsClosed check
 
 	// socket state
-	active              atomic.Bool // flag session is active
-	readErr, writeErr   error
-	readDone, writeDone chan struct{}
+	active                  atomic.Bool // flag session is active
+	readErr, writeErr       error
+	readClosed, writeClosed atomic.Bool
+	readDone, writeDone     chan struct{}
 
 	acceptCh       chan *stream
 	acceptDeadline *deadline.Deadline // deadline for Accept()
@@ -163,7 +164,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	go s.recvLoop()
 	go s.sendLoop()
 	if !config.KeepAliveDisabled {
-		go s.keepalive()
+		go s.timerLoop()
 	}
 	return s
 }
@@ -192,6 +193,14 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, io.ErrClosedPipe
 	}
 
+	if s.writeClosed.Load() {
+		return nil, s.writeErr
+	}
+
+	if s.readClosed.Load() {
+		return nil, s.readErr
+	}
+
 	sid, ok := s.allocStreamID()
 	if !ok {
 		return nil, ErrGoAway
@@ -211,12 +220,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 
 	select {
-	case <-s.readDone:
-		err = s.readErr
-	case <-s.writeDone:
-		err = s.writeErr
 	case <-s.done:
-		err = io.ErrClosedPipe
+	case <-s.writeDone:
+	case <-s.readDone:
 	default:
 		wrapper := &Stream{stream: stream}
 		// Do not install a finalizer; it could close a stream still in use.
@@ -226,6 +232,17 @@ func (s *Session) OpenStream() (*Stream, error) {
 			})
 		*/
 		return wrapper, nil
+	}
+
+	switch {
+	case s.IsClosed():
+		err = io.ErrClosedPipe
+	case s.writeClosed.Load():
+		err = s.writeErr
+	case s.readClosed.Load():
+		err = s.readErr
+	default:
+		panic("unexpected state received a signal")
 	}
 
 cleanup:
@@ -253,17 +270,32 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		if s.IsClosed() {
 			return nil, io.ErrClosedPipe
 		}
-		wrapper := &Stream{stream: stream}
+
+		if s.readClosed.Load() {
+			return nil, s.readErr
+		}
+
+		wrapped := &Stream{stream: stream}
 		// Do not install a finalizer: io.Copy may call the embedded stream's
 		// WriteTo method, making this wrapper unreachable while the transfer is
 		// still active. A finalizer could then close the stream prematurely.
-		return wrapper, nil
-	case <-s.acceptDeadline.Done():
-		return nil, ErrTimeout
+		return wrapped, nil
 	case <-s.readDone:
+		if s.IsClosed() {
+			return nil, io.ErrClosedPipe
+		}
+
 		return nil, s.readErr
-	case <-s.done:
-		return nil, io.ErrClosedPipe
+	case <-s.acceptDeadline.Done():
+		if s.IsClosed() {
+			return nil, io.ErrClosedPipe
+		}
+
+		if s.readClosed.Load() {
+			return nil, s.readErr
+		}
+
+		return nil, ErrTimeout
 	}
 }
 
@@ -293,25 +325,15 @@ func (s *Session) Close() error {
 	}
 
 	close(s.done)
+	err := s.conn.Close()
 
-	// Wait for in-flight admissions to finish before the shaper drains its queues.
+	// Wait for all background loops to exit before returning from Close.
+	<-s.readDone
+	<-s.writeDone
 	<-s.shaperDone
 
 	s.closeStreams()
-	err := s.conn.Close()
-	s.drainAccepts()
 	return err
-}
-
-// drainAccepts removes any streams still waiting in the accept queue.
-func (s *Session) drainAccepts() {
-	for {
-		select {
-		case <-s.acceptCh:
-		default:
-			return
-		}
-	}
 }
 
 // CloseChan returns a channel that is closed when the session shuts down.
@@ -325,18 +347,6 @@ func (s *Session) notifyBucket() {
 	case s.bucketNotify <- struct{}{}:
 	default:
 	}
-}
-
-// notifyReadError records the first underlying-connection read error.
-func (s *Session) notifyReadError(err error) {
-	s.readErr = err
-	close(s.readDone)
-}
-
-// notifyWriteError records the first underlying-connection write error.
-func (s *Session) notifyWriteError(err error) {
-	s.writeErr = err
-	close(s.writeDone)
 }
 
 // IsClosed reports whether the session has shut down.
@@ -565,38 +575,64 @@ func (s *Session) readRecord() error {
 
 // recvLoop reads and dispatches frames while receive-buffer capacity is available.
 func (s *Session) recvLoop() {
+	var err error
+RECV_LOOP:
 	for {
+		if s.IsClosed() {
+			break RECV_LOOP
+		}
+
 		// Wait for receive capacity, or stop if the session closes.
-		for s.bucket.Load() <= 0 && !s.IsClosed() {
+		for s.bucket.Load() <= 0 {
 			select {
 			case <-s.done:
 				// With no receive capacity, shutdown wakes this wait directly.
 				// A shutdown during io.ReadFull instead surfaces as a read error.
-				return
+				break RECV_LOOP
 			case <-s.bucketNotify:
+				// If the session is closed, stop waiting for receive capacity.
+				if s.IsClosed() {
+					break RECV_LOOP
+				}
 			}
 		}
 
-		err := s.readRecord()
+		err = s.readRecord()
 		if err != nil {
-			s.notifyReadError(err)
+			break RECV_LOOP
+		}
+	}
+
+	if s.IsClosed() {
+		err = io.ErrClosedPipe
+	}
+	s.readErr = err
+	s.readClosed.Store(true)
+	close(s.readDone)
+
+	for {
+		select {
+		case <-s.acceptCh:
+		default:
 			return
 		}
 	}
 }
 
 // keepalive sends periodic NOP frames and closes an inactive session on timeout.
-func (s *Session) keepalive() {
-	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
-	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
-	defer tickerPing.Stop()
-	defer tickerTimeout.Stop()
+func (s *Session) timerLoop() {
+	ping := time.NewTicker(s.config.KeepAliveInterval)
+	defer ping.Stop()
+
+	timeout := time.NewTicker(s.config.KeepAliveTimeout)
+	defer timeout.Stop()
+
 	for {
 		select {
-		case <-tickerPing.C:
-			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
+		case <-ping.C:
+			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), ping.C, CLSCTRL)
 			s.notifyBucket() // Wake recvLoop in case it is waiting for capacity.
-		case <-tickerTimeout.C:
+		case <-timeout.C:
 			if s.active.CompareAndSwap(true, false) {
 				continue
 			}
@@ -617,21 +653,21 @@ func (s *Session) keepalive() {
 
 // shaperLoop prioritizes control frames and schedules data frames fairly across streams.
 func (s *Session) shaperLoop() {
-	err := io.ErrClosedPipe
-	chShaper := s.shaper
+	shaper := s.shaper
+
+SHAPER_LOOP:
 	for {
 		select {
 		case <-s.done:
-			goto exit
+			break SHAPER_LOOP
 		case <-s.writeDone:
-			err = s.writeErr
-			goto exit
-		case r := <-chShaper:
+			break SHAPER_LOOP
+		case r := <-shaper:
 			s.sq.Push(r)
 			// Batch additional requests while there is room in the shaper queue.
-			for len(chShaper) > 0 && s.sq.Len() < maxShaperSize {
+			for len(shaper) > 0 && s.sq.Len() < maxShaperSize {
 				select {
-				case r := <-chShaper:
+				case r := <-shaper:
 					s.sq.Push(r)
 				default:
 				}
@@ -641,25 +677,27 @@ func (s *Session) shaperLoop() {
 
 			if s.sq.Len() >= maxShaperSize {
 				// Pause admissions until sendLoop frees queue capacity.
-				chShaper = nil
+				shaper = nil
 			}
 		case <-s.shaperConsumed:
 			// Resume accepting requests after the queue has been consumed.
-			chShaper = s.shaper
+			shaper = s.shaper
 		}
 	}
 
-exit:
 	s.activeCall.Wait()
-	s.discardPendingWrites(err)
+
+	switch {
+	case s.IsClosed():
+		s.discardPendingWrites(io.ErrClosedPipe)
+	default:
+		s.discardPendingWrites(s.writeErr)
+	}
 	close(s.shaperDone)
 }
 
 // discardPendingWrites completes queued requests with err during shutdown.
 func (s *Session) discardPendingWrites(err error) {
-	if err == nil {
-		err = io.ErrClosedPipe
-	}
 	for {
 		select {
 		case req := <-s.shaper:
@@ -673,9 +711,6 @@ func (s *Session) discardPendingWrites(err error) {
 	}
 
 drainQueue:
-	if s.sq == nil {
-		return
-	}
 	for {
 		req, ok := s.sq.Pop()
 		if !ok {
@@ -707,8 +742,6 @@ func (s *Session) notifyShaperConsumed() {
 // sendLoop serializes queued frames onto the underlying connection.
 func (s *Session) sendLoop() {
 	var buf []byte
-	var n int
-	var err error
 	var vec [][]byte // vector for writeBuffers
 
 	bw, ok := s.conn.(interface {
@@ -722,11 +755,14 @@ func (s *Session) sendLoop() {
 		buf = make([]byte, (1<<16)+headerSize)
 	}
 
+	var n int
+	var err error
 EVENT_LOOP:
 	for {
 		select {
 		case <-s.done:
-			return
+			err = io.ErrClosedPipe
+			break EVENT_LOOP
 		case <-s.shaperPending:
 			for {
 				request, ok := s.sq.Pop()
@@ -757,21 +793,19 @@ EVENT_LOOP:
 				n -= headerSize
 				n = max(n, 0)
 
-				result := writeResult{
-					n:   n,
-					err: err,
-				}
-
-				request.result <- result
+				request.result <- writeResult{n: n, err: err}
 
 				// Stop the writer after recording an underlying connection error.
 				if err != nil {
-					s.notifyWriteError(err)
-					return
+					break EVENT_LOOP
 				}
 			}
 		}
 	}
+
+	s.writeErr = err
+	s.writeClosed.Store(true)
+	close(s.writeDone)
 }
 
 // writeControlFrame queues a control frame and waits up to openCloseTimeout
@@ -801,14 +835,34 @@ func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) er
 	case <-s.done:
 		return io.ErrClosedPipe
 	case <-s.writeDone:
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
+
 		return s.writeErr
 	case <-deadline:
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
+
+		if s.writeClosed.Load() {
+			return s.writeErr
+		}
+
 		return ErrTimeout
 	}
 }
 
 // writeFrameInternal queues a frame and waits for its write result or deadline.
 func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLASSID) (n int, err error) {
+	if s.IsClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
+	if s.writeClosed.Load() {
+		return 0, s.writeErr
+	}
+
 	// Reuse a result channel to avoid allocating one for every frame.
 	resultCh := resultChanPool.Get().(chan writeResult)
 
@@ -829,19 +883,23 @@ func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLA
 	select {
 	case result := <-resultCh:
 		n, err = result.n, result.err
+		goto recycle
 	case <-s.done:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, io.ErrClosedPipe
 	case <-s.writeDone:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, s.writeErr
 	case <-deadline:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, ErrTimeout
 	}
+
+	if s.IsClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
+	if s.writeClosed.Load() {
+		return 0, s.writeErr
+	}
+
+	// sendLoop may still deliver this request's result; keep the channel
+	// out of the pool to prevent another request from reusing it.
+	return 0, ErrTimeout
 
 recycle:
 	resultChanPool.Put(resultCh)
