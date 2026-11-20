@@ -353,45 +353,6 @@ func TestWriteFrameInternalWriteBuffersErrorPreserved(t *testing.T) {
 	}
 }
 
-func TestDiscardPendingWritesSignalsWaitingWriters(t *testing.T) {
-	sess := &Session{
-		shaper: make(chan writeRequest, 2),
-		sq:     NewShaperQueue(),
-	}
-
-	reqInChannel := writeRequest{
-		frame:  newFrame(2, cmdPSH, 1),
-		result: make(chan writeResult, 1),
-	}
-	reqInQueue := writeRequest{
-		frame:  newFrame(2, cmdPSH, 2),
-		result: make(chan writeResult, 1),
-	}
-	sess.shaper <- reqInChannel
-	sess.sq.Push(reqInQueue)
-
-	wantErr := errors.New("synthetic write error")
-	sess.discardPendingWrites(wantErr)
-
-	select {
-	case res := <-reqInChannel.result:
-		if res.err != wantErr {
-			t.Fatalf("channel request error = %v; want %v", res.err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("channel request did not receive completion signal")
-	}
-
-	select {
-	case res := <-reqInQueue.result:
-		if res.err != wantErr {
-			t.Fatalf("queue request error = %v; want %v", res.err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queue request did not receive completion signal")
-	}
-}
-
 // stopTimer stops the supplied timer and drains its channel if needed.
 func stopTimer(t *time.Timer) {
 	if t == nil {
@@ -402,51 +363,6 @@ func stopTimer(t *time.Timer) {
 		case <-t.C:
 		default:
 		}
-	}
-}
-
-func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T) {
-	cfg := DefaultConfig()
-	sess := &Session{
-		config:     cfg,
-		shaper:     make(chan writeRequest, 1),
-		sq:         NewShaperQueue(),
-		done:       make(chan struct{}),
-		readDone:   make(chan struct{}),
-		writeDone:  make(chan struct{}),
-		activeCall: libsync.NewQuit(),
-	}
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer stopTimer(deadline)
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := writeFrameInternal(sess, newFrame(byte(cfg.Version), cmdPSH, 1), deadline.C, CLSDATA)
-		done <- err
-	}()
-
-	waitQueued := time.NewTimer(time.Second)
-	defer stopTimer(waitQueued)
-	for len(sess.shaper) == 0 {
-		select {
-		case <-waitQueued.C:
-			t.Fatal("write request was not queued in time")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-
-	wantErr := errors.New("drained while closing")
-	sess.discardPendingWrites(wantErr)
-
-	select {
-	case err := <-done:
-		if err != wantErr {
-			t.Fatalf("writeFrameInternal error = %v; want %v", err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("writeFrameInternal blocked after pending write was discarded")
 	}
 }
 

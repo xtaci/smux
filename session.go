@@ -686,40 +686,30 @@ SHAPER_LOOP:
 	}
 
 	s.activeCall.Wait()
-
-	switch {
-	case s.IsClosed():
-		s.discardPendingWrites(io.ErrClosedPipe)
-	default:
-		s.discardPendingWrites(s.writeErr)
-	}
+	s.discardPendingWrites()
 	close(s.shaperDone)
 }
 
-// discardPendingWrites completes queued requests with err during shutdown.
-func (s *Session) discardPendingWrites(err error) {
+// discardPendingWrites returns writeResult channels to the pool after discarding pending write requests.
+// It is called when there is no activeCall (no pending receiver).
+func (s *Session) discardPendingWrites() {
 	for {
 		select {
 		case req := <-s.shaper:
-			select {
-			case req.result <- writeResult{err: err}:
-			default:
-			}
+			resultChanPool.Put(req.result)
 		default:
-			goto drainQueue
+			goto drain_queue
 		}
 	}
 
-drainQueue:
+drain_queue:
 	for {
 		req, ok := s.sq.Pop()
 		if !ok {
 			return
 		}
-		select {
-		case req.result <- writeResult{err: err}:
-		default:
-		}
+
+		resultChanPool.Put(req.result)
 	}
 }
 
@@ -820,15 +810,6 @@ func (s *Session) writeControlFrame(f Frame) (n int, err error) {
 // sendWriteRequest queues a frame before deadline, session shutdown, or a
 // connection write error.
 func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) error {
-	if !s.activeCall.Add(1) {
-		if s.IsClosed() {
-			return io.ErrClosedPipe
-		}
-
-		return s.writeErr
-	}
-	defer s.activeCall.Done()
-
 	select {
 	case s.shaper <- req:
 		return nil
@@ -862,6 +843,15 @@ func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLA
 	if s.writeClosed.Load() {
 		return 0, s.writeErr
 	}
+
+	if !s.activeCall.Add(1) {
+		if s.IsClosed() {
+			return 0, io.ErrClosedPipe
+		}
+
+		return 0, s.writeErr
+	}
+	defer s.activeCall.Done()
 
 	// Reuse a result channel to avoid allocating one for every frame.
 	resultCh := resultChanPool.Get().(chan writeResult)
