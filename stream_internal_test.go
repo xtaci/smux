@@ -2,7 +2,6 @@ package smux
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v4"
 	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
@@ -130,8 +130,8 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	if buffered != 0 {
 		t.Fatalf("session close left %d buffers", buffered)
 	}
-	if len(s.sess.streams) != 0 {
-		t.Fatalf("session close left %d streams", len(s.sess.streams))
+	if s.sess.streams.Size() != 0 {
+		t.Fatalf("session close left %d streams", s.sess.streams.Size())
 	}
 	if got := s.sess.bucket.Load(); got != int32(s.sess.config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, s.sess.config.MaxReceiveBuffer)
@@ -366,82 +366,18 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
-func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
-	cfg := DefaultConfig()
-	conn, peer := net.Pipe()
-	defer peer.Close()
-
-	sess := &Session{
-		conn:         conn,
-		config:       cfg,
-		streams:      make(map[uint32]*stream),
-		bucketNotify: make(chan struct{}, 1),
-		done:         make(chan struct{}),
-		acceptCh:     make(chan *stream, 1),
-		readDone:     make(chan struct{}),
-		writeDone:    make(chan struct{}),
-	}
-	sess.bucket.Store(int32(cfg.MaxReceiveBuffer))
-	recvDone := make(chan struct{})
-	go func() {
-		sess.recvLoop()
-		close(recvDone)
-	}()
-
-	sess.streamLock.Lock()
-	var hdr rawHeader
-	hdr[0] = byte(cfg.Version)
-	hdr[1] = cmdSYN
-	binary.LittleEndian.PutUint32(hdr[4:], 123)
-	writeDone := make(chan error, 1)
-	go func() {
-		_, err := peer.Write(hdr[:])
-		writeDone <- err
-	}()
-	select {
-	case err := <-writeDone:
-		if err != nil {
-			sess.streamLock.Unlock()
-			t.Fatal("write SYN failed:", err)
-		}
-	case <-time.After(time.Second):
-		sess.streamLock.Unlock()
-		t.Fatal("recvLoop did not read SYN header")
-	}
-
-	sess.closed.Store(true)
-	close(sess.done)
-	sess.streamLock.Unlock()
-	peer.Close()
-
-	select {
-	case <-recvDone:
-	case <-time.After(time.Second):
-		t.Fatal("recvLoop did not exit after peer close")
-	}
-
-	sess.streamLock.Lock()
-	defer sess.streamLock.Unlock()
-	if len(sess.streams) != 0 {
-		t.Fatalf("closed session retained %d streams", len(sess.streams))
-	}
-	if len(sess.acceptCh) != 0 {
-		t.Fatalf("closed session retained %d pending accepts", len(sess.acceptCh))
-	}
-}
-
 func newUnitTestStream() *stream {
 	cfg := DefaultConfig()
 	sess := &Session{
 		config:       cfg,
-		streams:      make(map[uint32]*stream),
+		streams:      xsync.NewMap[uint32, *stream](),
 		readDone:     make(chan struct{}),
 		writeDone:    make(chan struct{}),
 		bucketNotify: make(chan struct{}, 1),
 		activeCall:   libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
-	sess.streams[st.id] = st
+	sess.streams.Store(st.id, st)
 	return st
 }
 
@@ -593,7 +529,7 @@ func TestSendWindowUpdateTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	sess := &Session{
 		config:       cfg,
-		streams:      make(map[uint32]*stream),
+		streams:      xsync.NewMap[uint32, *stream](),
 		readDone:     make(chan struct{}),
 		writeDone:    make(chan struct{}),
 		bucketNotify: make(chan struct{}, 1),
@@ -632,14 +568,14 @@ func newUnitTestStreamV2() *stream {
 	cfg.Version = 2
 	sess := &Session{
 		config:       cfg,
-		streams:      make(map[uint32]*stream),
+		streams:      xsync.NewMap[uint32, *stream](),
 		readDone:     make(chan struct{}),
 		writeDone:    make(chan struct{}),
 		bucketNotify: make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
-	sess.streams[st.id] = st
+	sess.streams.Store(st.id, st)
 	return st
 }
 

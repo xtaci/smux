@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/pion/transport/v5/deadline"
+	"github.com/puzpuzpuz/xsync/v4"
 	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
@@ -108,8 +109,7 @@ type Session struct {
 	bucket       atomic.Int32  // token bucket
 	bucketNotify chan struct{} // used for waiting for tokens
 
-	streams    map[uint32]*stream // all streams in this session
-	streamLock sync.Mutex         // locks streams
+	streams *xsync.Map[uint32, *stream] // all streams in this session
 
 	done   chan struct{} // flag session has died
 	closed atomic.Bool   // fast IsClosed check
@@ -138,7 +138,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.done = make(chan struct{})
 	s.conn = conn
 	s.config = config
-	s.streams = make(map[uint32]*stream)
+	s.streams = xsync.NewMap[uint32, *stream]()
 	s.acceptCh = make(chan *stream, defaultAcceptBacklog)
 	s.bucket.Store(int32(config.MaxReceiveBuffer))
 	s.bucketNotify = make(chan struct{}, 1)
@@ -210,9 +210,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	// Register the stream before sending SYN so an immediate peer response is
 	// not discarded by recvLoop as belonging to an unknown stream.
-	s.streamLock.Lock()
-	s.streams[sid] = stream
-	s.streamLock.Unlock()
+	s.streams.Store(sid, stream)
 
 	_, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid))
 	if err != nil {
@@ -306,16 +304,13 @@ func (s *Session) Accept() (io.ReadWriteCloser, error) {
 
 // closeStreams closes every registered stream and reclaims its receive tokens.
 func (s *Session) closeStreams() {
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-
-	for k, stream := range s.streams {
+	s.streams.DeleteMatching(func(_ uint32, stream *stream) (bool, bool) {
 		stream.sessionClose()
 		if n := stream.recycleTokens(); n > 0 {
 			s.bucket.Add(int32(n))
 		}
-		delete(s.streams, k)
-	}
+		return true, false
+	})
 }
 
 // Close is used to close the session and all streams.
@@ -359,9 +354,7 @@ func (s *Session) NumStreams() int {
 	if s.IsClosed() {
 		return 0
 	}
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-	return len(s.streams)
+	return s.streams.Size()
 }
 
 // SetDeadline sets a deadline used by Accept* calls.
@@ -393,21 +386,20 @@ func (s *Session) RemoteAddr() net.Addr {
 
 // streamClosed removes a closed stream and returns its unused receive tokens.
 func (s *Session) streamClosed(sid uint32) {
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-
-	stream, ok := s.streams[sid]
+	stream, ok := s.streams.LoadAndDelete(sid)
 	if !ok {
 		return
 	}
 
-	if n := stream.recycleTokens(); n > 0 {
-		// Restore receive capacity held by unread data from this stream.
-		if s.bucket.Add(int32(n)) > 0 {
-			s.notifyBucket()
-		}
+	n := stream.recycleTokens()
+	if n <= 0 {
+		return
 	}
-	delete(s.streams, sid)
+
+	// Restore receive capacity held by unread data from this stream.
+	if s.bucket.Add(int32(n)) > 0 {
+		s.notifyBucket()
+	}
 }
 
 // returnTokens returns receive-buffer capacity after a stream reads data.
@@ -415,25 +407,6 @@ func (s *Session) returnTokens(n int) {
 	if s.bucket.Add(int32(n)) > 0 {
 		s.notifyBucket()
 	}
-}
-
-func (s *Session) recvNewStream(sid uint32) (*stream, error) {
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-
-	if s.IsClosed() {
-		return nil, io.ErrClosedPipe
-	}
-
-	_, ok := s.streams[sid]
-	if ok {
-		// Ignore
-		return nil, nil
-	}
-
-	stream := newStream(sid, s.config.MaxFrameSize, s)
-	s.streams[sid] = stream
-	return stream, nil
 }
 
 func (s *Session) readRecord() error {
@@ -469,12 +442,14 @@ func (s *Session) readRecord() error {
 			return ErrInvalidProtocol
 		}
 
-		stream, err := s.recvNewStream(sid)
-		if err != nil {
-			return err
+		if s.IsClosed() {
+			return io.ErrClosedPipe
 		}
 
-		if stream == nil {
+		stream, loaded := s.streams.LoadOrCompute(sid, func() (*stream, bool) {
+			return newStream(sid, s.config.MaxFrameSize, s), false
+		})
+		if loaded {
 			// Ignore duplicate SYN frames for an existing stream.
 			return nil
 		}
@@ -493,14 +468,13 @@ func (s *Session) readRecord() error {
 			return ErrInvalidProtocol
 		}
 
-		s.streamLock.Lock()
-		st := s.streams[sid]
-		s.streamLock.Unlock()
-		if st != nil {
-			// Wake stream operations waiting for peer data or closure.
-			st.fin()
+		stream, ok := s.streams.Load(sid)
+		if !ok {
+			return nil
 		}
 
+		// Wake stream operations waiting for peer data or closure.
+		stream.fin()
 		return nil
 
 	case cmdPSH:
@@ -518,29 +492,27 @@ func (s *Session) readRecord() error {
 			return err
 		}
 
-		// Queue the payload on its target stream.
-		s.streamLock.Lock()
-		defer s.streamLock.Unlock()
+		s.streams.Compute(sid, func(stream *stream, ok bool) (*stream, xsync.ComputeOp) {
+			if !ok {
+				// Dropped payloads were never charged to the token bucket.
+				free(pNewbuf)
+				return nil, xsync.CancelOp
+			}
 
-		stream, ok := s.streams[sid]
-		if !ok {
-			// Dropped payloads were never charged to the token bucket.
-			free(pNewbuf)
-			return nil
-		}
+			// Ignore data sent after the peer closed its write side.
+			if stream.isReadClosed.Load() {
+				// Dropped payloads were never charged to the token bucket.
+				free(pNewbuf)
+				return nil, xsync.CancelOp
+			}
 
-		// Ignore data sent after the peer closed its write side.
-		if stream.isReadClosed.Load() {
-			// Dropped payloads were never charged to the token bucket.
-			free(pNewbuf)
-			return nil
-		}
-
-		stream.pushBytes(pNewbuf)
-		// Tokens are charged only while payload is buffered; reads
-		// and stream cleanup return them to the shared bucket.
-		s.bucket.Add(-int32(written))
-		stream.wakeupReader()
+			stream.pushBytes(pNewbuf)
+			// Tokens are charged only while payload is buffered; reads
+			// and stream cleanup return them to the shared bucket.
+			s.bucket.Add(-int32(written))
+			stream.wakeupReader()
+			return nil, xsync.CancelOp
+		})
 		return nil
 
 	case cmdUPD:
@@ -560,12 +532,12 @@ func (s *Session) readRecord() error {
 		}
 
 		// Apply the update if the referenced stream is still registered.
-		s.streamLock.Lock()
-		st := s.streams[sid]
-		s.streamLock.Unlock()
-		if st != nil {
-			st.update(hdr.Consumed(), hdr.Window())
+		stream, ok := s.streams.Load(sid)
+		if !ok {
+			return nil
 		}
+
+		stream.update(hdr.Consumed(), hdr.Window())
 		return nil
 
 	default:
