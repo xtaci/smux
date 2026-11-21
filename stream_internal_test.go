@@ -366,7 +366,7 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
-func newUnitTestStream() *stream {
+func newUnitTestStream() *Stream {
 	cfg := DefaultConfig()
 	sess := &Session{
 		config:       cfg,
@@ -376,9 +376,9 @@ func newUnitTestStream() *stream {
 		bucketNotify: make(chan struct{}, 1),
 		activeCall:   libsync.NewQuit(),
 	}
-	st := newStream(1, cfg.MaxFrameSize, sess)
-	sess.streams.Store(st.id, st)
-	return st
+	stream := newStream(1, cfg.MaxFrameSize, sess)
+	sess.streams.Store(stream.id, stream)
+	return &Stream{stream: stream}
 }
 
 func TestStreamWaitReadTimeout(t *testing.T) {

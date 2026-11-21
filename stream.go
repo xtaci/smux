@@ -37,6 +37,7 @@ import (
 // Stream is a wrapper around stream that exposes the public API.
 type Stream struct {
 	*stream
+	finalizer runtime.Cleanup
 }
 
 // Stream implements net.Conn
@@ -222,13 +223,20 @@ func newStream(id uint32, frameSize int, sess *Session) *stream {
 	return s
 }
 
+func freeStream(s *stream) {
+	s.Close()
+}
+
 // ID returns the stream's unique identifier.
-func (s *stream) ID() uint32 {
+func (s *Stream) ID() uint32 {
 	return s.id
 }
 
 // Read reads data from the stream into b.
-func (s *stream) Read(b []byte) (n int, err error) {
+func (s *Stream) Read(b []byte) (n int, err error) {
+	// keep the wrapper reachable until the read completes.
+	defer runtime.KeepAlive(s)
+
 	if s.sess.config.Version == 2 {
 		for {
 			n, err = s.tryReadV2(b)
@@ -374,7 +382,10 @@ func (s *stream) tryReadV2(b []byte) (n int, err error) {
 // WriteTo writes stream data to w until the stream reaches EOF or an error occurs.
 // It returns the number of bytes written and any error encountered. For protocol
 // version 2, it sends window updates to the peer as needed.
-func (s *stream) WriteTo(w io.Writer) (n int64, err error) {
+func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
+	// Keep the wrapper reachable until the write completes.
+	defer runtime.KeepAlive(s)
+
 	switch s.sess.config.Version {
 	case 2:
 		return s.writeToV2(w)
@@ -695,7 +706,10 @@ func (s *stream) checkWriteClosed() error {
 //
 // Concurrent Write calls may interleave at frame boundaries, and their ordering
 // is nondeterministic.
-func (s *stream) Write(b []byte) (n int, err error) {
+func (s *Stream) Write(b []byte) (n int, err error) {
+	// keep the wrapper reachable until the write completes.
+	defer runtime.KeepAlive(s)
+
 	switch s.sess.config.Version {
 	case 2:
 		return s.writeV2(b)
@@ -851,7 +865,7 @@ func (s *stream) writeV2(b []byte) (n int, err error) {
 // After CloseWrite, the stream can still receive data from the peer,
 // but any further writes will return io.ErrClosedPipe.
 // This is similar to net.TCPConn.CloseWrite().
-func (s *stream) CloseWrite() error {
+func (s *Stream) CloseWrite() error {
 	if s.isWriteClosed.Swap(true) {
 		return io.ErrClosedPipe
 	}
@@ -868,7 +882,6 @@ func (s *stream) CloseWrite() error {
 	return err
 }
 
-// Close implements net.Conn
 // Close fully closes the stream (both read and write sides).
 func (s *stream) Close() error {
 	s.forcedClose.Store(true)
@@ -899,15 +912,21 @@ func (s *stream) Close() error {
 	return err
 }
 
+// Close implements net.Conn
+func (s *Stream) Close() error {
+	defer s.finalizer.Stop()
+	return s.stream.Close()
+}
+
 // GetDieCh returns a channel that is closed when the stream is closed.
-func (s *stream) GetDieCh() <-chan struct{} {
+func (s *Stream) GetDieCh() <-chan struct{} {
 	return s.done
 }
 
 // SetReadDeadline sets the read deadline as defined by
 // net.Conn.SetReadDeadline.
 // A zero time value disables the deadline.
-func (s *stream) SetReadDeadline(t time.Time) error {
+func (s *Stream) SetReadDeadline(t time.Time) error {
 	s.readDeadline.Set(t)
 	s.wakeupReader()
 	return nil
@@ -916,7 +935,7 @@ func (s *stream) SetReadDeadline(t time.Time) error {
 // SetWriteDeadline sets the write deadline as defined by
 // net.Conn.SetWriteDeadline.
 // A zero time value disables the deadline.
-func (s *stream) SetWriteDeadline(t time.Time) error {
+func (s *Stream) SetWriteDeadline(t time.Time) error {
 	s.writeDeadline.Set(t)
 	s.wakeupWriter()
 	return nil
@@ -925,7 +944,7 @@ func (s *stream) SetWriteDeadline(t time.Time) error {
 // SetDeadline sets both read and write deadlines as defined by
 // net.Conn.SetDeadline.
 // A zero time value disables the deadlines.
-func (s *stream) SetDeadline(t time.Time) error {
+func (s *Stream) SetDeadline(t time.Time) error {
 	if err := s.SetReadDeadline(t); err != nil {
 		return err
 	}
@@ -945,7 +964,7 @@ func (s *stream) sessionClose() {
 }
 
 // LocalAddr returns the underlying connection's local address, if available.
-func (s *stream) LocalAddr() net.Addr {
+func (s *Stream) LocalAddr() net.Addr {
 	if ts, ok := s.sess.conn.(interface {
 		LocalAddr() net.Addr
 	}); ok {
@@ -955,7 +974,7 @@ func (s *stream) LocalAddr() net.Addr {
 }
 
 // RemoteAddr returns the underlying connection's remote address, if available.
-func (s *stream) RemoteAddr() net.Addr {
+func (s *Stream) RemoteAddr() net.Addr {
 	if ts, ok := s.sess.conn.(interface {
 		RemoteAddr() net.Addr
 	}); ok {
