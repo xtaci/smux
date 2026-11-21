@@ -223,12 +223,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	case <-s.readDone:
 	default:
 		wrapper := &Stream{stream: stream}
-		// Do not install a finalizer; it could close a stream still in use.
-		/*
-			runtime.SetFinalizer(wrapper, func(s *Stream) {
-				s.Close()
-			})
-		*/
+		wrapper.finalizer = runtime.AddCleanup(wrapper, freeStream, stream)
 		return wrapper, nil
 	}
 
@@ -279,11 +274,9 @@ func (s *Session) AcceptStream() (*Stream, error) {
 			return nil, s.readErr
 		}
 
-		wrapped := &Stream{stream: stream}
-		// Do not install a finalizer: io.Copy may call the embedded stream's
-		// WriteTo method, making this wrapper unreachable while the transfer is
-		// still active. A finalizer could then close the stream prematurely.
-		return wrapped, nil
+		wrapper := &Stream{stream: stream}
+		wrapper.finalizer = runtime.AddCleanup(wrapper, freeStream, stream)
+		return wrapper, nil
 	case <-s.readDone:
 		if s.IsClosed() {
 			return nil, io.ErrClosedPipe
