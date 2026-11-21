@@ -570,6 +570,11 @@ func (s *stream) waitRead() error {
 			break
 		}
 
+		// Check again for forced close to resolve a race in Close.
+		if s.isForcedClosed() {
+			return io.ErrClosedPipe
+		}
+
 		// If the stream is half-closed, but the read deadline has expired, return ErrTimeout.
 		if s.readDeadline.Err() != nil {
 			return ErrTimeout
@@ -590,6 +595,11 @@ func (s *stream) waitRead() error {
 		// The session read error may have raced with full stream closure.
 		if s.isClosed.Load() {
 			break
+		}
+
+		// Check again for forced close to resolve a race in Close.
+		if s.isForcedClosed() {
+			return io.ErrClosedPipe
 		}
 
 		if s.isReadClosed.Load() {
