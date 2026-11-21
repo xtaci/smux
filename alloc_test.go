@@ -120,8 +120,8 @@ func BenchmarkMSB(b *testing.B) {
 
 func BenchmarkAlloc(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		pbuf := defaultAllocator.Get(i % 65536)
-		defaultAllocator.Put(pbuf)
+		pbuf := malloc(i % 65536)
+		free(pbuf)
 	}
 }
 

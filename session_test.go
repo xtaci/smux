@@ -65,20 +65,21 @@ func setupServer(tb testing.TB) (addr string, stopfunc func(), client net.Conn, 
 func handleConnection(conn net.Conn) {
 	session, _ := Server(conn, nil)
 	for {
-		if stream, err := session.AcceptStream(); err == nil {
-			go func(s io.ReadWriteCloser) {
-				buf := make([]byte, 65536)
-				for {
-					n, err := s.Read(buf)
-					if err != nil {
-						return
-					}
-					s.Write(buf[:n])
-				}
-			}(stream)
-		} else {
+		stream, err := session.AcceptStream()
+		if err != nil {
 			return
 		}
+
+		go func(s *Stream) {
+			buf := make([]byte, 65536)
+			for {
+				n, err := s.Read(buf)
+				if err != nil {
+					return
+				}
+				s.Write(buf[:n])
+			}
+		}(stream)
 	}
 }
 
@@ -111,20 +112,21 @@ func handleConnectionV2(conn net.Conn) {
 	config.Version = 2
 	session, _ := Server(conn, config)
 	for {
-		if stream, err := session.AcceptStream(); err == nil {
-			go func(s io.ReadWriteCloser) {
-				buf := make([]byte, 65536)
-				for {
-					n, err := s.Read(buf)
-					if err != nil {
-						return
-					}
-					s.Write(buf[:n])
-				}
-			}(stream)
-		} else {
+		stream, err := session.AcceptStream()
+		if err != nil {
 			return
 		}
+
+		go func(s *Stream) {
+			buf := make([]byte, 65536)
+			for {
+				n, err := s.Read(buf)
+				if err != nil {
+					return
+				}
+				s.Write(buf[:n])
+			}
+		}(stream)
 	}
 }
 
@@ -1010,7 +1012,7 @@ func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, want := atomic.LoadInt32(&session.bucket), int32(config.MaxReceiveBuffer-len("valid data")); got != want {
+	if got, want := session.bucket.Load(), int32(config.MaxReceiveBuffer-len("valid data")); got != want {
 		t.Fatalf("receive bucket before read = %d; want %d", got, want)
 	}
 
@@ -1029,7 +1031,7 @@ func TestSessionDiscardsDataAfterPeerFIN(t *testing.T) {
 	if n, err := stream.Read(buf); n != 0 || err != io.EOF {
 		t.Fatalf("Read after FIN = (%d, %v); want (0, EOF)", n, err)
 	}
-	if got := atomic.LoadInt32(&session.bucket); got != int32(config.MaxReceiveBuffer) {
+	if got := session.bucket.Load(); got != int32(config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, config.MaxReceiveBuffer)
 	}
 }

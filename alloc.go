@@ -37,6 +37,14 @@ func init() {
 	defaultAllocator = NewAllocator()
 }
 
+func malloc(size int) *[]byte {
+	return defaultAllocator.Get(size)
+}
+
+func free(p *[]byte) {
+	defaultAllocator.Put(p)
+}
+
 // Allocator pools byte slices for incoming frames.
 type Allocator struct {
 	buffers []sync.Pool

@@ -33,11 +33,12 @@ import (
 	"time"
 
 	"github.com/pion/transport/v5/deadline"
+	"github.com/puzpuzpuz/xsync/v4"
+	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
 const (
 	defaultAcceptBacklog = 1024
-	minShaperNotifySize  = 16
 	maxShaperSize        = 1024
 	openCloseTimeout     = 30 * time.Second // Timeout for opening/closing streams
 )
@@ -105,60 +106,49 @@ type Session struct {
 	nextStreamID     uint32 // next stream identifier
 	nextStreamIDLock sync.Mutex
 
-	bucket       int32         // token bucket
+	bucket       atomic.Int32  // shared receive-buffer token count
 	bucketNotify chan struct{} // used for waiting for tokens
 
-	streams    map[uint32]*stream // all streams in this session
-	streamLock sync.Mutex         // locks streams
+	streams *xsync.Map[uint32, *stream] // all streams in this session
 
-	die     chan struct{} // flag session has died
-	dieOnce sync.Once
-	closed  atomic.Int32 // atomic flag for fast IsClosed check
+	done   chan struct{} // closed when session shutdown begins
+	closed atomic.Bool   // fast IsClosed check
 
-	// socket error handling
-	socketReadError      error
-	socketWriteError     error
-	chSocketReadError    chan struct{}
-	chSocketWriteError   chan struct{}
-	socketReadErrorOnce  sync.Once
-	socketWriteErrorOnce sync.Once
+	// socket state
+	active                  atomic.Bool // inbound activity since the previous timeout check
+	readErr, writeErr       error
+	readClosed, writeClosed atomic.Bool
+	readDone, writeDone     chan struct{}
 
-	// smux protocol errors
-	protoError     error
-	chProtoError   chan struct{}
-	protoErrorOnce sync.Once
+	acceptCh       chan *stream
+	acceptDeadline *deadline.Deadline // deadline for Accept()
 
-	chAccepts chan *stream
-
-	sessionIsActive atomic.Int32       // flag session is active
-	acceptDeadline  *deadline.Deadline // deadline for Accept()
-
-	requestID        atomic.Uint32     // Monotonic increasing write request ID
-	writeReqLock     sync.RWMutex      // fences write request admission during shutdown
-	shaper           chan writeRequest // a shaper for writing
-	sq               *shaperQueue
-	chShaperDone     chan struct{}
-	chShaperPending  chan struct{}
-	chShaperConsumed chan struct{}
+	activeCall     *libsync.Quit     // tracks in-flight write requests during shutdown
+	requestID      atomic.Uint32     // Monotonic increasing write request ID
+	shaper         chan writeRequest // a shaper for writing
+	sq             *shaperQueue
+	shaperDone     chan struct{}
+	shaperPending  chan struct{}
+	shaperConsumed chan struct{}
 }
 
 // newSession creates a session and starts its background processing loops.
 func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
-	s.die = make(chan struct{})
+	s.done = make(chan struct{})
 	s.conn = conn
 	s.config = config
-	s.streams = make(map[uint32]*stream)
-	s.chAccepts = make(chan *stream, defaultAcceptBacklog)
-	s.bucket = int32(config.MaxReceiveBuffer)
+	s.streams = xsync.NewMap[uint32, *stream]()
+	s.acceptCh = make(chan *stream, defaultAcceptBacklog)
+	s.bucket.Store(int32(config.MaxReceiveBuffer))
 	s.bucketNotify = make(chan struct{}, 1)
+	s.activeCall = libsync.NewQuit()
 	s.shaper = make(chan writeRequest, maxShaperSize)
-	s.chSocketReadError = make(chan struct{})
-	s.chSocketWriteError = make(chan struct{})
-	s.chProtoError = make(chan struct{})
-	s.chShaperPending = make(chan struct{}, 1)
-	s.chShaperConsumed = make(chan struct{}, 1)
-	s.chShaperDone = make(chan struct{})
+	s.readDone = make(chan struct{})
+	s.writeDone = make(chan struct{})
+	s.shaperPending = make(chan struct{}, 1)
+	s.shaperConsumed = make(chan struct{}, 1)
+	s.shaperDone = make(chan struct{})
 	s.sq = NewShaperQueue()
 
 	s.nextStreamID = 0
@@ -174,7 +164,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	go s.recvLoop()
 	go s.sendLoop()
 	if !config.KeepAliveDisabled {
-		go s.keepalive()
+		go s.timerLoop()
 	}
 	return s
 }
@@ -203,6 +193,14 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return nil, io.ErrClosedPipe
 	}
 
+	if s.writeClosed.Load() {
+		return nil, s.writeErr
+	}
+
+	if s.readClosed.Load() {
+		return nil, s.readErr
+	}
+
 	sid, ok := s.allocStreamID()
 	if !ok {
 		return nil, ErrGoAway
@@ -212,9 +210,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 	// Register the stream before sending SYN so an immediate peer response is
 	// not discarded by recvLoop as belonging to an unknown stream.
-	s.streamLock.Lock()
-	s.streams[sid] = stream
-	s.streamLock.Unlock()
+	s.streams.Store(sid, stream)
 
 	_, err := s.writeControlFrame(newFrame(byte(s.config.Version), cmdSYN, sid))
 	if err != nil {
@@ -222,12 +218,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 	}
 
 	select {
-	case <-s.chSocketReadError:
-		err = s.socketReadError
-	case <-s.chSocketWriteError:
-		err = s.socketWriteError
-	case <-s.die:
-		err = io.ErrClosedPipe
+	case <-s.done:
+	case <-s.writeDone:
+	case <-s.readDone:
 	default:
 		wrapper := &Stream{stream: stream}
 		// Do not install a finalizer; it could close a stream still in use.
@@ -237,6 +230,17 @@ func (s *Session) OpenStream() (*Stream, error) {
 			})
 		*/
 		return wrapper, nil
+	}
+
+	switch {
+	case s.IsClosed():
+		err = io.ErrClosedPipe
+	case s.writeClosed.Load():
+		err = s.writeErr
+	case s.readClosed.Load():
+		err = s.readErr
+	default:
+		panic("unexpected state received a signal")
 	}
 
 cleanup:
@@ -255,24 +259,41 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, io.ErrClosedPipe
 	}
 
+	if s.acceptDeadline.Err() != nil {
+		return nil, ErrTimeout
+	}
+
 	select {
-	case stream := <-s.chAccepts:
+	case stream := <-s.acceptCh:
 		if s.IsClosed() {
 			return nil, io.ErrClosedPipe
 		}
-		wrapper := &Stream{stream: stream}
+
+		if s.readClosed.Load() {
+			return nil, s.readErr
+		}
+
+		wrapped := &Stream{stream: stream}
 		// Do not install a finalizer: io.Copy may call the embedded stream's
 		// WriteTo method, making this wrapper unreachable while the transfer is
 		// still active. A finalizer could then close the stream prematurely.
-		return wrapper, nil
+		return wrapped, nil
+	case <-s.readDone:
+		if s.IsClosed() {
+			return nil, io.ErrClosedPipe
+		}
+
+		return nil, s.readErr
 	case <-s.acceptDeadline.Done():
+		if s.IsClosed() {
+			return nil, io.ErrClosedPipe
+		}
+
+		if s.readClosed.Load() {
+			return nil, s.readErr
+		}
+
 		return nil, ErrTimeout
-	case <-s.chSocketReadError:
-		return nil, s.socketReadError
-	case <-s.chProtoError:
-		return nil, s.protoError
-	case <-s.die:
-		return nil, io.ErrClosedPipe
 	}
 }
 
@@ -283,61 +304,36 @@ func (s *Session) Accept() (io.ReadWriteCloser, error) {
 
 // closeStreams closes every registered stream and reclaims its receive tokens.
 func (s *Session) closeStreams() {
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-
-	for k, stream := range s.streams {
+	s.streams.DeleteMatching(func(_ uint32, stream *stream) (bool, bool) {
 		stream.sessionClose()
 		if n := stream.recycleTokens(); n > 0 {
-			atomic.AddInt32(&s.bucket, int32(n))
+			s.bucket.Add(int32(n))
 		}
-		delete(s.streams, k)
-	}
+		return true, false
+	})
 }
 
 // Close is used to close the session and all streams.
 func (s *Session) Close() error {
-	var once bool
-	s.dieOnce.Do(func() {
-		s.closed.Store(1)
-		close(s.die)
-		once = true
-	})
-
-	if !once {
+	if s.closed.Swap(true) {
 		return io.ErrClosedPipe
 	}
 
-	// Wait for in-flight admissions to finish before the shaper drains its queues.
-	s.writeReqLock.Lock()
-	s.writeReqLock.Unlock()
+	close(s.done)
+	err := s.conn.Close()
+
+	// Wait for the receive, send, and shaper loops to exit before returning.
+	<-s.readDone
+	<-s.writeDone
+	<-s.shaperDone
 
 	s.closeStreams()
-	err := s.conn.Close()
-	if s.chShaperDone != nil {
-		<-s.chShaperDone
-	}
-	// Drain again because an admission racing with shutdown may have completed
-	// after shaperLoop's initial drain.
-	s.discardPendingWrites(io.ErrClosedPipe)
-	s.drainAccepts()
 	return err
-}
-
-// drainAccepts removes any streams still waiting in the accept queue.
-func (s *Session) drainAccepts() {
-	for {
-		select {
-		case <-s.chAccepts:
-		default:
-			return
-		}
-	}
 }
 
 // CloseChan returns a channel that is closed when the session shuts down.
 func (s *Session) CloseChan() <-chan struct{} {
-	return s.die
+	return s.done
 }
 
 // notifyBucket wakes recvLoop after receive-buffer capacity becomes available.
@@ -348,33 +344,9 @@ func (s *Session) notifyBucket() {
 	}
 }
 
-// notifyReadError records the first underlying-connection read error.
-func (s *Session) notifyReadError(err error) {
-	s.socketReadErrorOnce.Do(func() {
-		s.socketReadError = err
-		close(s.chSocketReadError)
-	})
-}
-
-// notifyWriteError records the first underlying-connection write error.
-func (s *Session) notifyWriteError(err error) {
-	s.socketWriteErrorOnce.Do(func() {
-		s.socketWriteError = err
-		close(s.chSocketWriteError)
-	})
-}
-
-// notifyProtoError records the first protocol error.
-func (s *Session) notifyProtoError(err error) {
-	s.protoErrorOnce.Do(func() {
-		s.protoError = err
-		close(s.chProtoError)
-	})
-}
-
 // IsClosed reports whether the session has shut down.
 func (s *Session) IsClosed() bool {
-	return s.closed.Load() != 0
+	return s.closed.Load()
 }
 
 // NumStreams returns the number of streams currently registered in the session.
@@ -382,9 +354,7 @@ func (s *Session) NumStreams() int {
 	if s.IsClosed() {
 		return 0
 	}
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-	return len(s.streams)
+	return s.streams.Size()
 }
 
 // SetDeadline sets a deadline used by Accept* calls.
@@ -416,201 +386,238 @@ func (s *Session) RemoteAddr() net.Addr {
 
 // streamClosed removes a closed stream and returns its unused receive tokens.
 func (s *Session) streamClosed(sid uint32) {
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-
-	stream, ok := s.streams[sid]
+	stream, ok := s.streams.LoadAndDelete(sid)
 	if !ok {
 		return
 	}
 
-	if n := stream.recycleTokens(); n > 0 {
-		// Restore receive capacity held by unread data from this stream.
-		if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
-			s.notifyBucket()
-		}
+	n := stream.recycleTokens()
+	if n <= 0 {
+		return
 	}
-	delete(s.streams, sid)
+
+	// Restore receive capacity held by unread data from this stream.
+	if s.bucket.Add(int32(n)) > 0 {
+		s.notifyBucket()
+	}
 }
 
 // returnTokens returns receive-buffer capacity after a stream reads data.
 func (s *Session) returnTokens(n int) {
-	if atomic.AddInt32(&s.bucket, int32(n)) > 0 {
+	if s.bucket.Add(int32(n)) > 0 {
 		s.notifyBucket()
+	}
+}
+
+func (s *Session) readRecord() error {
+	var hdr rawHeader
+
+	// Read the next frame header while receive capacity is available.
+	_, err := io.ReadFull(s.conn, hdr[:])
+	if err != nil {
+		return err
+	}
+
+	// Refresh activity for keep-alive timeout detection.
+	s.active.Store(true)
+
+	// Reject frames from an incompatible protocol version.
+	if hdr.Version() != byte(s.config.Version) {
+		return ErrInvalidProtocol
+	}
+
+	// Dispatch the frame according to its command.
+	sid := hdr.StreamID()
+	switch hdr.Cmd() {
+	case cmdNOP:
+		if hdr.Length() != 0 {
+			return ErrInvalidProtocol
+		}
+
+		return nil
+	case cmdSYN:
+		// Open a new peer-initiated stream.
+
+		if hdr.Length() != 0 {
+			return ErrInvalidProtocol
+		}
+
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
+
+		stream, loaded := s.streams.LoadOrCompute(sid, func() (*stream, bool) {
+			return newStream(sid, s.config.MaxFrameSize, s), false
+		})
+		if loaded {
+			// Ignore duplicate SYN frames for an existing stream.
+			return nil
+		}
+
+		select {
+		case s.acceptCh <- stream:
+		case <-s.done:
+			return io.ErrClosedPipe
+		}
+		return nil
+
+	case cmdFIN:
+		// Mark the peer's write side as closed.
+
+		if hdr.Length() != 0 {
+			return ErrInvalidProtocol
+		}
+
+		stream, ok := s.streams.Load(sid)
+		if !ok {
+			return nil
+		}
+
+		// Wake stream operations waiting for peer data or closure.
+		stream.fin()
+		return nil
+
+	case cmdPSH:
+		// Read and queue stream payload data.
+
+		if hdr.Length() == 0 {
+			return nil
+		}
+
+		pNewbuf := malloc(int(hdr.Length()))
+		// Read the complete payload before dispatching the frame.
+		written, err := io.ReadFull(s.conn, *pNewbuf)
+		if err != nil {
+			free(pNewbuf)
+			return err
+		}
+
+		s.streams.Compute(sid, func(stream *stream, ok bool) (*stream, xsync.ComputeOp) {
+			if !ok {
+				// Dropped payloads were never charged to the token bucket.
+				free(pNewbuf)
+				return nil, xsync.CancelOp
+			}
+
+			// Ignore data sent after the peer closed its write side.
+			if stream.isReadClosed.Load() {
+				// Dropped payloads were never charged to the token bucket.
+				free(pNewbuf)
+				return nil, xsync.CancelOp
+			}
+
+			stream.pushBytes(pNewbuf)
+			// Tokens are charged only while payload is buffered; reads
+			// and stream cleanup return them to the shared bucket.
+			s.bucket.Add(-int32(written))
+			stream.wakeupReader()
+			return nil, xsync.CancelOp
+		})
+		return nil
+
+	case cmdUPD:
+		// Apply a protocol-version-2 flow-control update.
+		if s.config.Version != 2 {
+			return ErrInvalidProtocol
+		}
+
+		if hdr.Length() != szCmdUPD {
+			return ErrInvalidProtocol
+		}
+
+		var hdr updHeader
+		_, err := io.ReadFull(s.conn, hdr[:])
+		if err != nil {
+			return err
+		}
+
+		// Apply the update if the referenced stream is still registered.
+		stream, ok := s.streams.Load(sid)
+		if !ok {
+			return nil
+		}
+
+		stream.update(hdr.Consumed(), hdr.Window())
+		return nil
+
+	default:
+		return ErrInvalidProtocol
 	}
 }
 
 // recvLoop reads and dispatches frames while receive-buffer capacity is available.
 func (s *Session) recvLoop() {
-	var hdr rawHeader
-	var updHdr updHeader
-
+	var err error
+RECV_LOOP:
 	for {
+		if s.IsClosed() {
+			break RECV_LOOP
+		}
+
 		// Wait for receive capacity, or stop if the session closes.
-		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
+		for s.bucket.Load() <= 0 {
 			select {
-			case <-s.bucketNotify:
-			case <-s.die:
+			case <-s.done:
 				// With no receive capacity, shutdown wakes this wait directly.
 				// A shutdown during io.ReadFull instead surfaces as a read error.
-				return
-			}
-		}
-
-		// Read the next frame header while receive capacity is available.
-		_, err := io.ReadFull(s.conn, hdr[:])
-		if err != nil {
-			s.notifyReadError(err)
-			return
-		}
-
-		// Record activity for keep-alive timeout detection.
-		s.sessionIsActive.Store(1)
-
-		// Reject frames from an incompatible protocol version.
-		if hdr.Version() != byte(s.config.Version) {
-			s.notifyProtoError(ErrInvalidProtocol)
-			return
-		}
-
-		// Dispatch the frame according to its command.
-		sid := hdr.StreamID()
-		switch hdr.Cmd() {
-		case cmdNOP:
-			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
-				return
-			}
-		case cmdSYN: // Open a new peer-initiated stream.
-			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
-				return
-			}
-			var accepted *stream
-			s.streamLock.Lock()
-			if !s.IsClosed() {
-				if _, ok := s.streams[sid]; !ok {
-					stream := newStream(sid, s.config.MaxFrameSize, s)
-					s.streams[sid] = stream
-					accepted = stream
-				}
-			}
-			s.streamLock.Unlock()
-
-			if accepted != nil {
-				select {
-				case s.chAccepts <- accepted:
-				case <-s.die:
-					return
-				}
+				break RECV_LOOP
+			case <-s.bucketNotify:
+				// If the session is closed, stop waiting for receive capacity.
 				if s.IsClosed() {
-					s.drainAccepts()
-					return
+					break RECV_LOOP
 				}
 			}
+		}
 
-		case cmdFIN: // Mark the peer's write side as closed.
-			if hdr.Length() != 0 {
-				s.notifyProtoError(ErrInvalidProtocol)
-				return
-			}
-			s.streamLock.Lock()
-			st := s.streams[sid]
-			s.streamLock.Unlock()
-			if st != nil {
-				st.fin() // Wake stream operations waiting for peer data or closure.
-			}
+		err = s.readRecord()
+		if err != nil {
+			break RECV_LOOP
+		}
+	}
 
-		case cmdPSH: // Read and queue stream payload data.
-			if hdr.Length() == 0 {
-				continue
-			}
+	if s.IsClosed() {
+		err = io.ErrClosedPipe
+	}
+	s.readErr = err
+	s.readClosed.Store(true)
+	close(s.readDone)
 
-			// Read the complete payload before dispatching the frame.
-			pNewbuf := defaultAllocator.Get(int(hdr.Length()))
-			written, err := io.ReadFull(s.conn, *pNewbuf)
-			if err != nil {
-				s.notifyReadError(err)
-
-				// Return the buffer because it cannot be queued.
-				defaultAllocator.Put(pNewbuf)
-				return
-			}
-
-			// Queue the payload on its target stream.
-			s.streamLock.Lock()
-			buffered := false
-			if stream, ok := s.streams[sid]; ok {
-				select {
-				case <-stream.chFinEvent:
-					// Ignore data sent after the peer closed its write side.
-				default:
-					stream.pushBytes(pNewbuf)
-					// Tokens are charged only while payload is buffered; reads
-					// and stream cleanup return them to the shared bucket.
-					atomic.AddInt32(&s.bucket, -int32(written))
-					stream.wakeupReader()
-					buffered = true
-				}
-			}
-			if !buffered {
-				// Dropped payloads were never charged to the token bucket.
-				defaultAllocator.Put(pNewbuf)
-			}
-			s.streamLock.Unlock()
-
-		case cmdUPD: // Apply a protocol-version-2 flow-control update.
-			if s.config.Version != 2 {
-				s.notifyProtoError(ErrInvalidProtocol)
-				return
-			}
-			if hdr.Length() != szCmdUPD {
-				s.notifyProtoError(ErrInvalidProtocol)
-				return
-			}
-
-			_, err := io.ReadFull(s.conn, updHdr[:])
-			if err != nil {
-				s.notifyReadError(err)
-				return
-			}
-
-			// Apply the update if the referenced stream is still registered.
-			s.streamLock.Lock()
-			st := s.streams[sid]
-			s.streamLock.Unlock()
-			if st != nil {
-				st.update(updHdr.Consumed(), updHdr.Window())
-			}
-
+	for {
+		select {
+		case <-s.acceptCh:
 		default:
-			s.notifyProtoError(ErrInvalidProtocol)
 			return
 		}
 	}
 }
 
 // keepalive sends periodic NOP frames and closes an inactive session on timeout.
-func (s *Session) keepalive() {
-	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
-	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
-	defer tickerPing.Stop()
-	defer tickerTimeout.Stop()
+func (s *Session) timerLoop() {
+	ping := time.NewTicker(s.config.KeepAliveInterval)
+	defer ping.Stop()
+
+	timeout := time.NewTicker(s.config.KeepAliveTimeout)
+	defer timeout.Stop()
+
 	for {
 		select {
-		case <-tickerPing.C:
-			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
+		case <-ping.C:
+			writeFrameInternal(s, newFrame(byte(s.config.Version), cmdNOP, 0), ping.C, CLSCTRL)
 			s.notifyBucket() // Wake recvLoop in case it is waiting for capacity.
-		case <-tickerTimeout.C:
-			if !s.sessionIsActive.CompareAndSwap(1, 0) {
-				// Do not time out while recvLoop is paused because the shared
-				// receive buffer is full.
-				if atomic.LoadInt32(&s.bucket) > 0 {
-					s.Close()
-					return
-				}
+		case <-timeout.C:
+			if s.active.CompareAndSwap(true, false) {
+				continue
 			}
-		case <-s.die:
+
+			// Do not time out while recvLoop is paused because the shared
+			// receive buffer is full.
+			if s.bucket.Load() <= 0 {
+				continue
+			}
+
+			s.Close()
+			return
+		case <-s.done:
 			return
 		}
 	}
@@ -618,34 +625,21 @@ func (s *Session) keepalive() {
 
 // shaperLoop prioritizes control frames and schedules data frames fairly across streams.
 func (s *Session) shaperLoop() {
-	defer func() {
-		err := io.ErrClosedPipe
-		select {
-		case <-s.chSocketWriteError:
-			if s.socketWriteError != nil {
-				err = s.socketWriteError
-			}
-		default:
-		}
-		s.writeReqLock.Lock()
-		s.discardPendingWrites(err)
-		s.writeReqLock.Unlock()
-		close(s.chShaperDone)
-	}()
-	chShaper := s.shaper
+	shaper := s.shaper
 
+SHAPER_LOOP:
 	for {
 		select {
-		case <-s.die:
-			return
-		case <-s.chSocketWriteError:
-			return
-		case r := <-chShaper:
+		case <-s.done:
+			break SHAPER_LOOP
+		case <-s.writeDone:
+			break SHAPER_LOOP
+		case r := <-shaper:
 			s.sq.Push(r)
 			// Batch additional requests while there is room in the shaper queue.
-			for len(chShaper) > 0 && s.sq.Len() < maxShaperSize {
+			for len(shaper) > 0 && s.sq.Len() < maxShaperSize {
 				select {
-				case r := <-chShaper:
+				case r := <-shaper:
 					s.sq.Push(r)
 				default:
 				}
@@ -655,52 +649,46 @@ func (s *Session) shaperLoop() {
 
 			if s.sq.Len() >= maxShaperSize {
 				// Pause admissions until sendLoop frees queue capacity.
-				chShaper = nil
+				shaper = nil
 			}
-		case <-s.chShaperConsumed:
+		case <-s.shaperConsumed:
 			// Resume accepting requests after the queue has been consumed.
-			chShaper = s.shaper
+			shaper = s.shaper
 		}
 	}
+
+	s.activeCall.Wait()
+	s.discardPendingWrites()
+	close(s.shaperDone)
 }
 
-// discardPendingWrites completes queued requests with err during shutdown.
-func (s *Session) discardPendingWrites(err error) {
-	if err == nil {
-		err = io.ErrClosedPipe
-	}
+// discardPendingWrites returns writeResult channels to the pool after discarding pending write requests.
+// It is called when there is no activeCall (no pending receiver).
+func (s *Session) discardPendingWrites() {
 	for {
 		select {
 		case req := <-s.shaper:
-			select {
-			case req.result <- writeResult{err: err}:
-			default:
-			}
+			resultChanPool.Put(req.result)
 		default:
-			goto drainQueue
+			goto drain_queue
 		}
 	}
 
-drainQueue:
-	if s.sq == nil {
-		return
-	}
+drain_queue:
 	for {
 		req, ok := s.sq.Pop()
 		if !ok {
 			return
 		}
-		select {
-		case req.result <- writeResult{err: err}:
-		default:
-		}
+
+		resultChanPool.Put(req.result)
 	}
 }
 
 // notifyShaperPending wakes sendLoop when requests are ready to be written.
 func (s *Session) notifyShaperPending() {
 	select {
-	case s.chShaperPending <- struct{}{}:
+	case s.shaperPending <- struct{}{}:
 	default:
 	}
 }
@@ -708,7 +696,7 @@ func (s *Session) notifyShaperPending() {
 // notifyShaperConsumed allows shaperLoop to resume admitting requests.
 func (s *Session) notifyShaperConsumed() {
 	select {
-	case s.chShaperConsumed <- struct{}{}:
+	case s.shaperConsumed <- struct{}{}:
 	default:
 	}
 }
@@ -716,8 +704,6 @@ func (s *Session) notifyShaperConsumed() {
 // sendLoop serializes queued frames onto the underlying connection.
 func (s *Session) sendLoop() {
 	var buf []byte
-	var n int
-	var err error
 	var vec [][]byte // vector for writeBuffers
 
 	bw, ok := s.conn.(interface {
@@ -731,12 +717,15 @@ func (s *Session) sendLoop() {
 		buf = make([]byte, (1<<16)+headerSize)
 	}
 
+	var n int
+	var err error
 EVENT_LOOP:
 	for {
 		select {
-		case <-s.die:
-			return
-		case <-s.chShaperPending:
+		case <-s.done:
+			err = io.ErrClosedPipe
+			break EVENT_LOOP
+		case <-s.shaperPending:
 			for {
 				request, ok := s.sq.Pop()
 				if !ok {
@@ -764,25 +753,21 @@ EVENT_LOOP:
 				}
 
 				n -= headerSize
-				if n < 0 {
-					n = 0
-				}
+				n = max(n, 0)
 
-				result := writeResult{
-					n:   n,
-					err: err,
-				}
-
-				request.result <- result
+				request.result <- writeResult{n: n, err: err}
 
 				// Stop the writer after recording an underlying connection error.
 				if err != nil {
-					s.notifyWriteError(err)
-					return
+					break EVENT_LOOP
 				}
 			}
 		}
 	}
+
+	s.writeErr = err
+	s.writeClosed.Store(true)
+	close(s.writeDone)
 }
 
 // writeControlFrame queues a control frame and waits up to openCloseTimeout
@@ -797,33 +782,49 @@ func (s *Session) writeControlFrame(f Frame) (n int, err error) {
 // sendWriteRequest queues a frame before deadline, session shutdown, or a
 // connection write error.
 func sendWriteRequest[T any](s *Session, req writeRequest, deadline <-chan T) error {
-	s.writeReqLock.RLock()
-	defer s.writeReqLock.RUnlock()
-
-	if s.IsClosed() {
-		return io.ErrClosedPipe
-	}
-
-	select {
-	case <-s.chSocketWriteError:
-		return s.socketWriteError
-	default:
-	}
-
 	select {
 	case s.shaper <- req:
 		return nil
-	case <-s.die:
+	case <-s.done:
 		return io.ErrClosedPipe
-	case <-s.chSocketWriteError:
-		return s.socketWriteError
+	case <-s.writeDone:
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
+
+		return s.writeErr
 	case <-deadline:
+		if s.IsClosed() {
+			return io.ErrClosedPipe
+		}
+
+		if s.writeClosed.Load() {
+			return s.writeErr
+		}
+
 		return ErrTimeout
 	}
 }
 
 // writeFrameInternal queues a frame and waits for its write result or deadline.
 func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLASSID) (n int, err error) {
+	if s.IsClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
+	if s.writeClosed.Load() {
+		return 0, s.writeErr
+	}
+
+	if !s.activeCall.Add(1) {
+		if s.IsClosed() {
+			return 0, io.ErrClosedPipe
+		}
+
+		return 0, s.writeErr
+	}
+	defer s.activeCall.Done()
+
 	// Reuse a result channel to avoid allocating one for every frame.
 	resultCh := resultChanPool.Get().(chan writeResult)
 
@@ -844,19 +845,23 @@ func writeFrameInternal[T any](s *Session, f Frame, deadline <-chan T, class CLA
 	select {
 	case result := <-resultCh:
 		n, err = result.n, result.err
-	case <-s.die:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, io.ErrClosedPipe
-	case <-s.chSocketWriteError:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, s.socketWriteError
+		goto recycle
+	case <-s.done:
+	case <-s.writeDone:
 	case <-deadline:
-		// sendLoop may still deliver this request's result; keep the channel
-		// out of the pool to prevent another request from reusing it.
-		return 0, ErrTimeout
 	}
+
+	if s.IsClosed() {
+		return 0, io.ErrClosedPipe
+	}
+
+	if s.writeClosed.Load() {
+		return 0, s.writeErr
+	}
+
+	// sendLoop may still deliver this request's result; keep the channel
+	// out of the pool to prevent another request from reusing it.
+	return 0, ErrTimeout
 
 recycle:
 	resultChanPool.Put(resultCh)

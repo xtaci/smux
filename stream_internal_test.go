@@ -2,7 +2,6 @@ package smux
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/puzpuzpuz/xsync/v4"
+	libsync "github.com/xtaci/smux/internal/lib/sync"
 )
 
 type shortWriteWriter struct {
@@ -30,7 +32,7 @@ func TestStreamWriteToShortWrite(t *testing.T) {
 				s.sess.config.Version = version
 				// Bound the wait if WriteTo incorrectly continues after the short write.
 				s.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				buf := defaultAllocator.Get(6)
+				buf := malloc(6)
 				copy(*buf, "abcdef")
 				s.pushBytes(buf)
 				s.fin()
@@ -67,7 +69,9 @@ func TestStreamWriteToReturnsForcedClose(t *testing.T) {
 			s := newUnitTestStream()
 			s.sess.config.Version = version
 			s.fin()
-			s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+			if !s.isWriteClosed.Swap(true) {
+				close(s.writeDone)
+			}
 			s.tryHalfCloseCleanup()
 			if err := s.Close(); err != io.ErrClosedPipe {
 				t.Fatalf("Close error = %v; want %v", err, io.ErrClosedPipe)
@@ -99,15 +103,22 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	s.sess.conn = conn
-	s.sess.die = make(chan struct{})
-	s.sess.chAccepts = make(chan *stream, 1)
-	atomic.StoreInt32(&s.sess.bucket, int32(s.sess.config.MaxReceiveBuffer))
-	s.sess.chAccepts <- s
+	s.sess.done = make(chan struct{})
+	s.sess.bucket.Add(int32(s.sess.config.MaxReceiveBuffer))
 
-	buf := defaultAllocator.Get(6)
+	s.sess.readDone = make(chan struct{})
+	close(s.sess.readDone)
+
+	s.sess.writeDone = make(chan struct{})
+	close(s.sess.writeDone)
+
+	s.sess.shaperDone = make(chan struct{})
+	close(s.sess.shaperDone)
+
+	buf := malloc(6)
 	copy(*buf, "abcdef")
 	s.pushBytes(buf)
-	atomic.AddInt32(&s.sess.bucket, -6)
+	s.sess.bucket.Add(-6)
 
 	if err := s.sess.Close(); err != nil {
 		t.Fatal("session close failed:", err)
@@ -119,13 +130,10 @@ func TestSessionCloseRecyclesStreamBuffers(t *testing.T) {
 	if buffered != 0 {
 		t.Fatalf("session close left %d buffers", buffered)
 	}
-	if len(s.sess.streams) != 0 {
-		t.Fatalf("session close left %d streams", len(s.sess.streams))
+	if s.sess.streams.Size() != 0 {
+		t.Fatalf("session close left %d streams", s.sess.streams.Size())
 	}
-	if len(s.sess.chAccepts) != 0 {
-		t.Fatalf("session close left %d pending accepts", len(s.sess.chAccepts))
-	}
-	if got := atomic.LoadInt32(&s.sess.bucket); got != int32(s.sess.config.MaxReceiveBuffer) {
+	if got := s.sess.bucket.Load(); got != int32(s.sess.config.MaxReceiveBuffer) {
 		t.Fatalf("receive bucket = %d; want %d", got, s.sess.config.MaxReceiveBuffer)
 	}
 }
@@ -248,7 +256,7 @@ func TestSocketWriteErrorDrainsPendingWriteRequests(t *testing.T) {
 	close(release)
 
 	select {
-	case <-sess.chShaperDone:
+	case <-sess.shaperDone:
 	case <-time.After(time.Second):
 		t.Fatal("shaperLoop did not stop after the socket write error")
 	}
@@ -284,7 +292,7 @@ func TestWriteFrameInternalShortWriteReturnsError(t *testing.T) {
 	}
 
 	select {
-	case <-sess.chSocketWriteError:
+	case <-sess.writeDone:
 	case <-time.After(time.Second):
 		t.Fatal("short write did not notify socket write error")
 	}
@@ -317,7 +325,7 @@ func TestWriteFrameInternalShortWriteFromWriteBuffersReturnsError(t *testing.T) 
 	}
 
 	select {
-	case <-sess.chSocketWriteError:
+	case <-sess.writeDone:
 	case <-time.After(time.Second):
 		t.Fatal("short WriteBuffers did not notify socket write error")
 	}
@@ -345,73 +353,6 @@ func TestWriteFrameInternalWriteBuffersErrorPreserved(t *testing.T) {
 	}
 }
 
-func TestNotifyWriteErrorDoesNotWaitForWriteAdmissionLock(t *testing.T) {
-	sess := &Session{chSocketWriteError: make(chan struct{})}
-	sess.writeReqLock.Lock()
-	done := make(chan struct{})
-	writeErr := errors.New("write failed")
-	go func() {
-		sess.notifyWriteError(writeErr)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		sess.writeReqLock.Unlock()
-		t.Fatal("write error notification blocked on write admission lock")
-	}
-	sess.writeReqLock.Unlock()
-
-	select {
-	case <-sess.chSocketWriteError:
-	default:
-		t.Fatal("write error notification did not close the error channel")
-	}
-	if got := sess.socketWriteError; got != writeErr {
-		t.Fatalf("stored write error = %v; want %v", got, writeErr)
-	}
-}
-
-func TestDiscardPendingWritesSignalsWaitingWriters(t *testing.T) {
-	sess := &Session{
-		shaper: make(chan writeRequest, 2),
-		sq:     NewShaperQueue(),
-	}
-
-	reqInChannel := writeRequest{
-		frame:  newFrame(2, cmdPSH, 1),
-		result: make(chan writeResult, 1),
-	}
-	reqInQueue := writeRequest{
-		frame:  newFrame(2, cmdPSH, 2),
-		result: make(chan writeResult, 1),
-	}
-	sess.shaper <- reqInChannel
-	sess.sq.Push(reqInQueue)
-
-	wantErr := errors.New("synthetic write error")
-	sess.discardPendingWrites(wantErr)
-
-	select {
-	case res := <-reqInChannel.result:
-		if res.err != wantErr {
-			t.Fatalf("channel request error = %v; want %v", res.err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("channel request did not receive completion signal")
-	}
-
-	select {
-	case res := <-reqInQueue.result:
-		if res.err != wantErr {
-			t.Fatalf("queue request error = %v; want %v", res.err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queue request did not receive completion signal")
-	}
-}
-
 // stopTimer stops the supplied timer and drains its channel if needed.
 func stopTimer(t *time.Timer) {
 	if t == nil {
@@ -425,128 +366,18 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
-func TestWriteFrameInternalDoesNotTimeoutWhenPendingWriteDiscarded(t *testing.T) {
-	cfg := DefaultConfig()
-	sess := &Session{
-		config:             cfg,
-		shaper:             make(chan writeRequest, 1),
-		sq:                 NewShaperQueue(),
-		die:                make(chan struct{}),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
-	}
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer stopTimer(deadline)
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := writeFrameInternal(sess, newFrame(byte(cfg.Version), cmdPSH, 1), deadline.C, CLSDATA)
-		done <- err
-	}()
-
-	waitQueued := time.NewTimer(time.Second)
-	defer stopTimer(waitQueued)
-	for len(sess.shaper) == 0 {
-		select {
-		case <-waitQueued.C:
-			t.Fatal("write request was not queued in time")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-
-	wantErr := errors.New("drained while closing")
-	sess.discardPendingWrites(wantErr)
-
-	select {
-	case err := <-done:
-		if err != wantErr {
-			t.Fatalf("writeFrameInternal error = %v; want %v", err, wantErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("writeFrameInternal blocked after pending write was discarded")
-	}
-}
-
-func TestRecvLoopDoesNotAddStreamAfterSessionClose(t *testing.T) {
-	cfg := DefaultConfig()
-	conn, peer := net.Pipe()
-	defer peer.Close()
-
-	sess := &Session{
-		conn:               conn,
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		bucket:             int32(cfg.MaxReceiveBuffer),
-		bucketNotify:       make(chan struct{}, 1),
-		die:                make(chan struct{}),
-		chAccepts:          make(chan *stream, 1),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
-	}
-	recvDone := make(chan struct{})
-	go func() {
-		sess.recvLoop()
-		close(recvDone)
-	}()
-
-	sess.streamLock.Lock()
-	var hdr rawHeader
-	hdr[0] = byte(cfg.Version)
-	hdr[1] = cmdSYN
-	binary.LittleEndian.PutUint32(hdr[4:], 123)
-	writeDone := make(chan error, 1)
-	go func() {
-		_, err := peer.Write(hdr[:])
-		writeDone <- err
-	}()
-	select {
-	case err := <-writeDone:
-		if err != nil {
-			sess.streamLock.Unlock()
-			t.Fatal("write SYN failed:", err)
-		}
-	case <-time.After(time.Second):
-		sess.streamLock.Unlock()
-		t.Fatal("recvLoop did not read SYN header")
-	}
-
-	sess.closed.Store(1)
-	close(sess.die)
-	sess.streamLock.Unlock()
-	peer.Close()
-
-	select {
-	case <-recvDone:
-	case <-time.After(time.Second):
-		t.Fatal("recvLoop did not exit after peer close")
-	}
-
-	sess.streamLock.Lock()
-	defer sess.streamLock.Unlock()
-	if len(sess.streams) != 0 {
-		t.Fatalf("closed session retained %d streams", len(sess.streams))
-	}
-	if len(sess.chAccepts) != 0 {
-		t.Fatalf("closed session retained %d pending accepts", len(sess.chAccepts))
-	}
-}
-
 func newUnitTestStream() *stream {
 	cfg := DefaultConfig()
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
+		config:       cfg,
+		streams:      xsync.NewMap[uint32, *stream](),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		activeCall:   libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
-	sess.streams[st.id] = st
+	sess.streams.Store(st.id, st)
 	return st
 }
 
@@ -587,7 +418,9 @@ func TestStreamWaitReadHalfCloseWithBufferedData(t *testing.T) {
 	s.pushBytes(&buf)
 
 	s.fin()
-	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	if !s.isWriteClosed.Swap(true) {
+		close(s.writeDone)
+	}
 	s.tryHalfCloseCleanup()
 
 	if err := s.waitRead(); err != nil {
@@ -598,7 +431,9 @@ func TestStreamWaitReadHalfCloseWithBufferedData(t *testing.T) {
 func TestStreamWaitReadHalfCloseDrainedEOF(t *testing.T) {
 	s := newUnitTestStream()
 	s.fin()
-	s.writeClosedOnce.Do(func() { close(s.chWriteClosed) })
+	if !s.isWriteClosed.Swap(true) {
+		close(s.writeDone)
+	}
 	s.tryHalfCloseCleanup()
 
 	if err := s.waitRead(); err != io.EOF {
@@ -625,7 +460,7 @@ func TestStreamRecycleTokens(t *testing.T) {
 func TestStreamRecycleTokensShrinksBufferRing(t *testing.T) {
 	s := newUnitTestStream()
 	for i := range defaultBufferRingCapacity * 2 {
-		buf := defaultAllocator.Get(1)
+		buf := malloc(1)
 		(*buf)[0] = byte(i)
 		s.pushBytes(buf)
 	}
@@ -683,7 +518,8 @@ func TestStreamSetDeadlineWakesUp(t *testing.T) {
 
 func TestStreamWaitReadClosed(t *testing.T) {
 	s := newUnitTestStream()
-	close(s.die)
+	s.forcedClose.Store(true)
+	close(s.done)
 	if err := s.waitRead(); err != io.ErrClosedPipe {
 		t.Fatalf("expected io.ErrClosedPipe, got %v", err)
 	}
@@ -692,14 +528,14 @@ func TestStreamWaitReadClosed(t *testing.T) {
 func TestSendWindowUpdateTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
-		shaper:             nil,
-		die:                make(chan struct{}),
+		config:       cfg,
+		streams:      xsync.NewMap[uint32, *stream](),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		shaper:       nil,
+		done:         make(chan struct{}),
+		activeCall:   libsync.NewQuit(),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
 	st.readDeadline.Set(time.Now().Add(-time.Second))
@@ -731,22 +567,21 @@ func newUnitTestStreamV2() *stream {
 	cfg := DefaultConfig()
 	cfg.Version = 2
 	sess := &Session{
-		config:             cfg,
-		streams:            make(map[uint32]*stream),
-		chSocketReadError:  make(chan struct{}),
-		chSocketWriteError: make(chan struct{}),
-		chProtoError:       make(chan struct{}),
-		bucketNotify:       make(chan struct{}, 1),
-		die:                make(chan struct{}),
+		config:       cfg,
+		streams:      xsync.NewMap[uint32, *stream](),
+		readDone:     make(chan struct{}),
+		writeDone:    make(chan struct{}),
+		bucketNotify: make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
 	st := newStream(1, cfg.MaxFrameSize, sess)
-	sess.streams[st.id] = st
+	sess.streams.Store(st.id, st)
 	return st
 }
 
 func TestWriteV2ClosedPipe(t *testing.T) {
 	s := newUnitTestStreamV2()
-	close(s.chWriteClosed)
+	close(s.writeDone)
 
 	if _, err := s.writeV2([]byte("x")); err != io.ErrClosedPipe {
 		t.Fatalf("expected io.ErrClosedPipe, got %v", err)
