@@ -914,7 +914,9 @@ func (s *stream) Close() error {
 
 // Close implements net.Conn
 func (s *Stream) Close() error {
-	defer s.finalizer.Stop()
+	s.finalizer.Stop()
+	// Keep the cleanup target reachable until Stop has taken effect.
+	runtime.KeepAlive(s)
 	return s.stream.Close()
 }
 
