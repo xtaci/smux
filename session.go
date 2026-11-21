@@ -232,6 +232,9 @@ func (s *Session) OpenStream() (*Stream, error) {
 		return wrapper, nil
 	}
 
+	// A terminal signal may race with the successful SYN write. Resolve the
+	// result from published session state, preferring session close, then
+	// write failure, then read failure, rather than from the select case chosen.
 	switch {
 	case s.IsClosed():
 		err = io.ErrClosedPipe
@@ -263,6 +266,9 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return nil, ErrTimeout
 	}
 
+	// Arrival of a stream may race with a terminal read error or session close.
+	// If terminal state is already published when dequeuing, return that error
+	// instead of handing out a stream.
 	select {
 	case stream := <-s.acceptCh:
 		if s.IsClosed() {
@@ -320,9 +326,12 @@ func (s *Session) Close() error {
 	}
 
 	close(s.done)
+	// Closing the connection interrupts recvLoop/sendLoop if they are blocked
+	// in connection I/O; wait for those loops and shaperLoop before reclaiming
+	// streams and their receive buffers.
 	err := s.conn.Close()
 
-	// Wait for the receive, send, and shaper loops to exit before returning.
+	// Wait for the receive, send, and shaper loops to finish their shutdown.
 	<-s.readDone
 	<-s.writeDone
 	<-s.shaperDone
@@ -450,10 +459,12 @@ func (s *Session) readRecord() error {
 			return newStream(sid, s.config.MaxFrameSize, s), false
 		})
 		if loaded {
-			// Ignore duplicate SYN frames for an existing stream.
+			// Ignore duplicate SYN frames; do not enqueue the same stream twice.
 			return nil
 		}
 
+		// Do not hold a stream-map lock while sending: a full accept queue may
+		// block recvLoop, but must not prevent other stream operations.
 		select {
 		case s.acceptCh <- stream:
 		case <-s.done:
@@ -492,16 +503,18 @@ func (s *Session) readRecord() error {
 			return err
 		}
 
+		// Serialize lookup, the post-FIN check, and enqueueing with stream
+		// removal: data is queued only while this stream remains registered.
 		s.streams.Compute(sid, func(stream *stream, ok bool) (*stream, xsync.ComputeOp) {
 			if !ok {
-				// Dropped payloads were never charged to the token bucket.
+				// Discarded payloads consume no shared receive-buffer tokens.
 				free(pNewbuf)
 				return nil, xsync.CancelOp
 			}
 
 			// Ignore data sent after the peer closed its write side.
 			if stream.isReadClosed.Load() {
-				// Dropped payloads were never charged to the token bucket.
+				// Data after FIN is discarded and consumes no receive tokens.
 				free(pNewbuf)
 				return nil, xsync.CancelOp
 			}
@@ -578,10 +591,14 @@ RECV_LOOP:
 	if s.IsClosed() {
 		err = io.ErrClosedPipe
 	}
+	// Publish the terminal error before closing readDone so waiters can safely
+	// read it after they wake.
 	s.readErr = err
 	s.readClosed.Store(true)
 	close(s.readDone)
 
+	// No more SYN frames can arrive after this loop exits. Discard streams that
+	// were queued for acceptance but had not yet been received by the caller.
 	for {
 		select {
 		case <-s.acceptCh:
@@ -606,12 +623,14 @@ func (s *Session) timerLoop() {
 			s.notifyBucket() // Wake recvLoop in case it is waiting for capacity.
 		case <-timeout.C:
 			if s.active.CompareAndSwap(true, false) {
+				// Inbound traffic during the interval indicates peer activity.
 				continue
 			}
 
 			// Do not time out while recvLoop is paused because the shared
 			// receive buffer is full.
 			if s.bucket.Load() <= 0 {
+				// recvLoop is paused by backpressure and cannot observe activity.
 				continue
 			}
 
@@ -657,13 +676,16 @@ SHAPER_LOOP:
 		}
 	}
 
+	// Stop admitting writes and wait for existing callers to leave before
+	// recycling their result channels from the pending queues.
 	s.activeCall.Wait()
 	s.discardPendingWrites()
 	close(s.shaperDone)
 }
 
 // discardPendingWrites returns writeResult channels to the pool after discarding pending write requests.
-// It is called when there is no activeCall (no pending receiver).
+// It is called only after activeCall.Wait, when no in-flight writeFrameInternal
+// call can still receive a result from these requests.
 func (s *Session) discardPendingWrites() {
 	for {
 		select {
@@ -767,6 +789,7 @@ EVENT_LOOP:
 
 	s.writeErr = err
 	s.writeClosed.Store(true)
+	// Publish the terminal write error before waking request waiters.
 	close(s.writeDone)
 }
 
