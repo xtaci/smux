@@ -106,16 +106,16 @@ type Session struct {
 	nextStreamID     uint32 // next stream identifier
 	nextStreamIDLock sync.Mutex
 
-	bucket       atomic.Int32  // token bucket
+	bucket       atomic.Int32  // shared receive-buffer token count
 	bucketNotify chan struct{} // used for waiting for tokens
 
 	streams *xsync.Map[uint32, *stream] // all streams in this session
 
-	done   chan struct{} // flag session has died
+	done   chan struct{} // closed when session shutdown begins
 	closed atomic.Bool   // fast IsClosed check
 
 	// socket state
-	active                  atomic.Bool // flag session is active
+	active                  atomic.Bool // inbound activity since the previous timeout check
 	readErr, writeErr       error
 	readClosed, writeClosed atomic.Bool
 	readDone, writeDone     chan struct{}
@@ -123,7 +123,7 @@ type Session struct {
 	acceptCh       chan *stream
 	acceptDeadline *deadline.Deadline // deadline for Accept()
 
-	activeCall     *libsync.Quit     // WaitGroup for pending tasks (e.g. write requests)
+	activeCall     *libsync.Quit     // tracks in-flight write requests during shutdown
 	requestID      atomic.Uint32     // Monotonic increasing write request ID
 	shaper         chan writeRequest // a shaper for writing
 	sq             *shaperQueue
@@ -322,7 +322,7 @@ func (s *Session) Close() error {
 	close(s.done)
 	err := s.conn.Close()
 
-	// Wait for all background loops to exit before returning from Close.
+	// Wait for the receive, send, and shaper loops to exit before returning.
 	<-s.readDone
 	<-s.writeDone
 	<-s.shaperDone

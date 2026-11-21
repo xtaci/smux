@@ -55,16 +55,16 @@ type stream struct {
 
 	// stream closing
 	done        chan struct{}
-	isClosed    atomic.Bool // Ensures done channel is closed only once
+	isClosed    atomic.Bool // Tracks full closure and guards closing done once.
 	forcedClose atomic.Bool // Set when Close or Session.Close aborts the stream.
 
 	v2WriteLock sync.Mutex // Serializes v2 window reservations between writers.
 
-	// to handle FIN event(i.e. EOF from remote)
+	// Signals that the peer has closed its write side by sending FIN.
 	readDone     chan struct{}
 	isReadClosed atomic.Bool // Ensures readDone is closed only once
 
-	// half-close support: local write closed (sent FIN)
+	// Local write-side closure; the FIN may still be in flight.
 	writeDone     chan struct{}
 	isWriteClosed atomic.Bool // Ensures writeDone is closed only once
 
@@ -72,13 +72,13 @@ type stream struct {
 	readDeadline, writeDeadline *deadline.Deadline
 
 	// v2 stream fields(flow control)
-	numRead    uint32        // count num of bytes read
+	numRead    uint32        // cumulative bytes consumed from the stream
 	numWritten atomic.Uint32 // count num of bytes written
-	incr       uint32        // bytes sent since last window update
+	incr       uint32        // bytes consumed since the last window update
 
 	// UPD command
 	peerConsumed          atomic.Uint32 // num of bytes the peer has consumed
-	peerWindow            uint32        // peer window, initialized to 256KB, updated by peer
+	peerWindow            uint32        // peer window, initialized to 256 KiB and updated by peer
 	chUpdate              chan struct{} // notify of remote data consuming and window update
 	windowUpdateThreshold uint32        // cached threshold for window update (MaxStreamBuffer/2)
 }
@@ -535,33 +535,29 @@ func (s *stream) sendWindowUpdate(consumed uint32) error {
 	return err
 }
 
-// waitRead blocks until a read condition changes, the stream or its session
-// read side closes, a session error occurs, or the read deadline expires.
+// waitRead blocks until a read condition changes, the stream or session read
+// side closes, a session error occurs, or the read deadline expires.
 //
 // Note that tryRead* is non-blocking and only falls back to waitRead when the
-// receive ring is empty, so this function is never entered while buffered
-// data is still available.
+// receive ring is empty, so this function is entered after the ring was found
+// empty.
 //
-// The state-channel cases (readDone, sess.readDone, done) deliberately do not
-// return per case. When two of them close concurrently — a forced Close racing
-// with the peer's FIN, with a session read error, or with the read deadline —
-// selectgo picks one case at random, and a per-case return would make the
-// outcome of Read depend on that choice. Instead, every such case converges on
-// the isForcedClosed / buffer-drained tail at the bottom, which guarantees the
-// same answer regardless of which case fired:
+// The state-channel cases (readDone, sess.readDone, done) can become ready
+// concurrently. selectgo picks one case at random. The readDone and
+// sess.readDone branches check the relevant stream state before returning;
+// the done case converges on the isForcedClosed / buffer-drained tail below.
+// This resolves the observable read state as follows:
 //
-//   - a forced close wins over a peer FIN, a session error, and deadline
-//     expiry, so a caller never mistakes an aborted stream for a clean EOF;
-//   - buffered data stays readable after the peer half-closes: the tail
-//     returns nil and lets tryRead* drain the ring before reporting EOF;
+//   - a forced close is checked before the common tail can report a clean EOF;
+//   - buffered data remains readable after the peer half-closes if no deadline
+//     has expired: the receive ring is checked before returning EOF;
 //   - io.EOF is reported only once the ring is actually drained.
 //
-// A wakeup from chReaderWakeup or the read deadline can return directly
-// because its meaning does not depend on concurrent state transitions (the
-// next tryRead* re-checks both forced close and the deadline before consuming
-// any data). The session read error can return directly when the stream is
-// still open, since a stream-local forced close would have been caught by the
-// isClosed check above.
+// A wakeup from chReaderWakeup can return directly because the next tryRead*
+// re-checks both forced close and the deadline before consuming data. The
+// read-deadline branch checks for forced close and a published session read
+// error before returning ErrTimeout. A session read error can return directly
+// when the stream is still open and has not received peer FIN.
 func (s *stream) waitRead() error {
 	select {
 	case <-s.chReaderWakeup:
@@ -570,7 +566,7 @@ func (s *stream) waitRead() error {
 		return nil
 	case <-s.readDone:
 		if s.isClosed.Load() {
-			// The stream is fully closed, check forced-close or both half-closed.
+			// The stream is fully closed; resolve forced-close or normal EOF below.
 			break
 		}
 
@@ -591,7 +587,7 @@ func (s *stream) waitRead() error {
 		}
 		return io.EOF
 	case <-s.sess.readDone:
-		// The stream is fully closed, check forced-close or both half-closed.
+		// The session read error may have raced with full stream closure.
 		if s.isClosed.Load() {
 			break
 		}
@@ -618,7 +614,7 @@ func (s *stream) waitRead() error {
 			return io.EOF
 		}
 
-		// The session read-side is not closed.
+		// The session read side is closed; return its error.
 		return s.sess.readErr
 	case <-s.readDeadline.Done():
 		if s.isForcedClosed() {
@@ -631,20 +627,20 @@ func (s *stream) waitRead() error {
 
 		return ErrTimeout
 	case <-s.done:
-		// The stream is fully closed, check forced-close or both half-closed.
+		// The stream is fully closed; resolve its final read state below.
 	}
 
-	// If the stream is forced closed, not allowing any further reads, return io.ErrClosedPipe.
+	// A forced close takes precedence over buffered data.
 	if s.isForcedClosed() {
 		return io.ErrClosedPipe
 	}
 
-	// If the stream is half-closed, but the read deadline has expired, return ErrTimeout.
+	// A normal full close does not override an expired read deadline.
 	if s.readDeadline.Err() != nil {
 		return ErrTimeout
 	}
 
-	// Otherwise, the stream is both half-closed, allowing reads.
+	// Deliver any remaining data before reporting EOF.
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
 
@@ -1014,8 +1010,8 @@ func (s *stream) fin() {
 	s.tryHalfCloseCleanup()
 }
 
-// tryHalfCloseCleanup closes the stream after both sides send FIN and removes
-// it from the session once its buffered data has been consumed.
+// tryHalfCloseCleanup closes the stream after both directions are closed and
+// removes it from the session once its buffered data has been consumed.
 func (s *stream) tryHalfCloseCleanup() {
 	if !s.isReadClosed.Load() {
 		return
